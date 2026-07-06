@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+
+  <!-- Viewport tuned for iOS Safari: no pinch-zoom, no auto text scaling -->
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover"
+  />
+
+  <!-- Makes the game feel like a full app when added to the iOS home screen -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="mobile-web-app-capable" content="yes" />
+
+  <title>Insel-Schlacht</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Single fullscreen canvas the whole game is drawn on -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- UI overlay for turn indicator, buttons, blind-shooting cover, etc. -->
+  <div id="ui-overlay"></div>
+
+  <!-- type="module" gives us native ES module imports, no bundler needed -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

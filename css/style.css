@@ -1,0 +1,84 @@
+/* Reset spacing and stop iOS from doing anything "helpful" like
+   zooming, bouncing, selecting text, or showing callouts on long-press. */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* no scrolling on a fullscreen game */
+  overscroll-behavior: none; /* stop iOS rubber-band scroll */
+  background: #04263b;
+  touch-action: none; /* disable native pinch/pan/double-tap-zoom gestures */
+}
+
+/* The canvas fills the whole screen; actual pixel size is set from JS
+   to match devicePixelRatio for crisp rendering. */
+#game-canvas {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #0a3d5c; /* fallback ocean color while first frame loads */
+}
+
+/* UI overlay sits above the canvas for buttons, text, and the
+   "blind shooting" cover screen. Pointer events are off by default
+   so taps pass through to the canvas; individual UI elements can
+   re-enable pointer-events themselves. */
+#ui-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: #fff;
+}
+
+#ui-overlay .turn-indicator {
+  position: absolute;
+  top: env(safe-area-inset-top, 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+#ui-overlay .btn {
+  pointer-events: auto;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 16px;
+}
+
+/* Full-screen cover shown between turns so the other player doesn't
+   see the board while it's not their turn (hot-seat "blind" phase). */
+#ui-overlay .blind-cover {
+  pointer-events: auto;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  font-size: 20px;
+  text-align: center;
+}
