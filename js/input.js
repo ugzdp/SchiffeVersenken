@@ -26,6 +26,7 @@ import {
   MAX_LINE_LENGTH,
   PLACEMENT_CONFIRM_WINDOW_MS,
   SWIPE_TIME_LIMIT_MS,
+  TOUCH_CONFIRM_WINDOW_EXTRA_MS,
   getPlacedIslandWorldShapes,
   isValidShipPlacementPath,
   tryExtendDragPath,
@@ -131,22 +132,13 @@ export function initInput(canvas, state, onTurnChanged) {
       const last = dragPath[dragPath.length - 1];
       const lastPx = relToPixel(last.x, last.y, width, height);
       const candidatePx = relToPixel(rel.x, rel.y, width, height);
-      const islandWorldShapes = getPlacedIslandWorldShapes(state.islands, state.map);
 
-      const result = tryExtendDragPath(
-        dragPath,
-        rel,
-        lastPx,
-        candidatePx,
-        dragPathLengthPx,
-        maxLengthPx,
-        islandWorldShapes
-      );
+      const result = tryExtendDragPath(dragPath, rel, lastPx, candidatePx, dragPathLengthPx, maxLengthPx);
       if (result.extended) {
         dragPath = result.path;
         dragPathLengthPx = result.lengthPx;
         state.dragPath.points = dragPath.map((point) => ({ x: point.x, y: point.y }));
-        state.dragPath.valid = isPathEndpointValid(state, dragPath);
+        state.dragPath.valid = isPathValid(state, dragPath);
       }
     }
     // No visual feedback while aiming a blind shot - the screen is black -
@@ -167,8 +159,10 @@ export function initInput(canvas, state, onTurnChanged) {
 
       const ship = placeShip(state, owner, path);
       if (ship) {
-        beginPlacementConfirmation(state, ship, event.timeStamp);
-        confirmTimer = setTimeout(commitPendingPlacement, PLACEMENT_CONFIRM_WINDOW_MS);
+        const isTouch = event.pointerType === "touch";
+        beginPlacementConfirmation(state, ship, event.timeStamp, isTouch);
+        const windowMs = PLACEMENT_CONFIRM_WINDOW_MS + (isTouch ? TOUCH_CONFIRM_WINDOW_EXTRA_MS : 0);
+        confirmTimer = setTimeout(commitPendingPlacement, windowMs);
         if (onTurnChanged) onTurnChanged();
       }
       return;
@@ -261,8 +255,12 @@ function resolveBlindShot(canvas, state, blindShot, event, onTurnChanged) {
   const avgSpeed = dist / (elapsedMs / 1000);
   const direction = [dx / dist, dy / dist];
   const speed = Math.max(blindShot.peakSpeed, avgSpeed);
+  const isTouch = event.pointerType === "touch";
 
-  const { sunkShip } = fireShot(state, blindShot.originShip, direction, speed, event.timeStamp);
+  const { sunkShip } = fireShot(state, blindShot.originShip, direction, speed, event.timeStamp, {
+    isTouch,
+    swipeDistance: dist,
+  });
   // Refresh the menu bar's shot/hit counters right away, so they update as
   // soon as the tracer is shown rather than waiting for the turn to pass
   // (which doesn't happen at all on the shot that ends the match).
@@ -315,8 +313,13 @@ function pixelToRel(canvas, event) {
   };
 }
 
-/** Whether a drag path's current endpoint is currently a legal ship placement (see rules.js). */
-function isPathEndpointValid(state, path) {
+/**
+ * Whether a drag path is currently a legal ship placement as a whole (see
+ * rules.js's isValidShipPlacementPath) - false the instant any segment has
+ * crossed land, not just when the current endpoint sits on one, since the
+ * path is now allowed to be dragged over islands and just shown red.
+ */
+function isPathValid(state, path) {
   const islandWorldShapes = getPlacedIslandWorldShapes(state.islands, state.map);
   return isValidShipPlacementPath(path, islandWorldShapes, state.ships);
 }

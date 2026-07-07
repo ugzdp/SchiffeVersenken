@@ -276,9 +276,9 @@ function showRulesModal(overlayEl) {
   grid.className = "rules-grid";
   grid.appendChild(
     createRulesColumn("Place a ship", [
-      "Drag a line out from one of your ships.",
-      "The line stops at max length - keep moving your finger to rotate it.",
-      "Release over open water to spawn a new ship there.",
+      "Freehand-drag a path out from one of your ships - it can curve around islands.",
+      "The path has a max length, then it freezes - release over open water to spawn a ship.",
+      "You get a second to undo the placement before the turn passes.",
     ]),
   );
   grid.appendChild(
@@ -450,16 +450,30 @@ export function initPlacementConfirmUI(overlayEl, onRevert) {
   overlayEl.appendChild(btn);
 }
 
+// Must match the CSS transition durations on .confirm-revert-btn /
+// .confirm-revert-btn--touch in style.css: once the button stops being
+// --active, it keeps taking taps for exactly this long (via --fading) so a
+// tap that lands mid-fade still registers, then goes inert. Touch placements
+// get a slower fade (and thus a longer clickable tail) since a finger's tap
+// lands later/less precisely than a mouse click - see CLAUDE.md Action A.
+const CONFIRM_FADE_MS = 200;
+const TOUCH_CONFIRM_FADE_MS = 600;
+
+let confirmFadeTimer = null;
+
 /**
  * Per-frame sync of the "undo" cross button (see initPlacementConfirmUI):
  * positioned just off the placed ship's hull and shown only while
  * Phase.CONFIRMING_PLACEMENT is active for the ship named by
- * state.pendingPlacement; hidden (and left in place) the instant the
- * placement commits or reverts, its CSS opacity transition providing the
- * fade described in CLAUDE.md Action A - a quick fade either way, whether
- * the window ran its full course or the opponent force-committed it early.
+ * state.pendingPlacement; hidden the instant the placement commits or
+ * reverts, its CSS opacity transition providing the fade described in
+ * CLAUDE.md Action A - a quick fade either way, whether the window ran its
+ * full course or the opponent force-committed it early. The button stays
+ * tappable for the whole fade (see --fading below), and touch placements
+ * (state.pendingPlacement.isTouch) get a slower fade with a longer tappable
+ * tail than mouse ones, since a finger's tap lands later/less precisely.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
- * @param {import("../engine/gameState.js").GameState & {pendingPlacement?: {shipId:string}|null}} state
+ * @param {import("../engine/gameState.js").GameState & {pendingPlacement?: {shipId:string, isTouch?:boolean}|null}} state
  * @param {number} width - canvas CSS width
  * @param {number} height - canvas CSS height
  * @returns {void}
@@ -471,7 +485,16 @@ export function updatePlacementConfirmUI(overlayEl, state, width, height) {
   const ship =
     state.pendingPlacement && state.ships.find((candidate) => candidate.id === state.pendingPlacement.shipId);
   if (!ship) {
-    btn.classList.remove("confirm-revert-btn--active");
+    if (btn.classList.contains("confirm-revert-btn--active")) {
+      const isTouch = btn.classList.contains("confirm-revert-btn--touch");
+      btn.classList.remove("confirm-revert-btn--active");
+      btn.classList.add("confirm-revert-btn--fading");
+      clearTimeout(confirmFadeTimer);
+      confirmFadeTimer = setTimeout(
+        () => btn.classList.remove("confirm-revert-btn--fading", "confirm-revert-btn--touch"),
+        isTouch ? TOUCH_CONFIRM_FADE_MS : CONFIRM_FADE_MS
+      );
+    }
     return;
   }
 
@@ -479,6 +502,9 @@ export function updatePlacementConfirmUI(overlayEl, state, width, height) {
   const OFFSET_PX = 26; // keeps the button clear of the ship hull it belongs to
   btn.style.left = `${pos.x + OFFSET_PX}px`;
   btn.style.top = `${pos.y - OFFSET_PX}px`;
+  btn.classList.toggle("confirm-revert-btn--touch", !!state.pendingPlacement.isTouch);
+  btn.classList.remove("confirm-revert-btn--fading");
+  clearTimeout(confirmFadeTimer);
   btn.classList.add("confirm-revert-btn--active");
 }
 

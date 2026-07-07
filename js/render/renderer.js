@@ -101,13 +101,16 @@ export function renderShips(ctx, state, width, height) {
 /**
  * Draw the in-progress freehand drag path for Action A (placing a new
  * ship): a dashed polyline tracing every point the finger has actually
- * visited so far, capped at max length and stopped from crossing land
- * (that's the engine's job - see rules.js's tryExtendDragPath - this just
- * draws whatever points it's given), plus a translucent preview of the
- * ship that would spawn at the path's end. Drawn in the player's own color
- * while the path's endpoint is a legal placement, red once it isn't
- * (landing on another ship) - see rules.js's isValidShipPlacementPath,
- * which input.js checks live while dragging.
+ * visited so far, capped at max length (see rules.js's tryExtendDragPath -
+ * this just draws whatever points it's given), plus a translucent preview
+ * of the ship that would spawn at the path's end. Drawn in the player's own
+ * color while the path is a legal placement, red once any segment has
+ * crossed land or the endpoint lands on another ship - see rules.js's
+ * isValidShipPlacementPath, which input.js checks live while dragging. The
+ * path is allowed to be dragged over an island (it turns red rather than
+ * freezing at the coastline); releasing while red discards the whole
+ * drag - see actions.js's placeShip(), which refuses to spawn a ship for an
+ * invalid path - so the player has to redo the move from scratch.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{points: Array<{x:number,y:number}>, owner:1|2, valid?:boolean}|null|undefined} dragPath
  */

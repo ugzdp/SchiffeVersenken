@@ -22,6 +22,7 @@ import {
   isValidShipPlacementPath,
   resolveShot,
   swipeSpeedToDistance,
+  swipeSpeedToDistanceTouch,
 } from "./rules.js";
 
 let nextShipId = 1;
@@ -61,10 +62,14 @@ export function placeShip(state, owner, path) {
  * @param {import("./gameState.js").GameState} state
  * @param {import("./gameState.js").Ship} ship - the ship placeShip() just added
  * @param {number} time - ms timestamp (e.g. event.timeStamp), stamped for reference/debugging
+ * @param {boolean} [isTouch] - whether the placement's drag was made with a
+ *   touch pointer; js/input.js uses this to extend the revert window
+ *   (TOUCH_CONFIRM_WINDOW_EXTRA_MS) and js/render/ui.js uses it to slow the
+ *   "undo" cross's fade-out to match
  * @returns {void}
  */
-export function beginPlacementConfirmation(state, ship, time) {
-  state.pendingPlacement = { shipId: ship.id, owner: ship.owner, startTime: time };
+export function beginPlacementConfirmation(state, ship, time, isTouch = false) {
+  state.pendingPlacement = { shipId: ship.id, owner: ship.owner, startTime: time, isTouch };
   setPhase(state, Phase.CONFIRMING_PLACEMENT);
 }
 
@@ -115,10 +120,15 @@ export function revertPlacement(state) {
  * @param {number} time - ms timestamp (e.g. event.timeStamp), stamped onto
  *   state.shotLine / the sunk ship's sinking-animation entry so effects.js
  *   can time their fade-out/animation from the same clock as the render loop
+ * @param {{isTouch?: boolean, swipeDistance?: number}} [options] - when
+ *   isTouch is true, distance is mapped via swipeSpeedToDistanceTouch's
+ *   gentler curve instead of swipeSpeedToDistance, anchored to the swipe's
+ *   own physical travel distance (swipeDistance, required in that case)
  * @returns {{sunkShip: import("./gameState.js").Ship|null}}
  */
-export function fireShot(state, originShip, direction, speed, time) {
-  const maxDistance = swipeSpeedToDistance(speed);
+export function fireShot(state, originShip, direction, speed, time, options = {}) {
+  const { isTouch = false, swipeDistance = 0 } = options;
+  const maxDistance = isTouch ? swipeSpeedToDistanceTouch(speed, swipeDistance) : swipeSpeedToDistance(speed);
   const mountainWorldShapes = getPlacedIslandWorldShapes(state.islands, state.map).flatMap(
     (island) => island.mountainShapes
   );

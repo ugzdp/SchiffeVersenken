@@ -31,6 +31,14 @@ export const MAX_LINE_LENGTH = 0.25;
  */
 export const PLACEMENT_CONFIRM_WINDOW_MS = 1000;
 
+/**
+ * Extra time added to PLACEMENT_CONFIRM_WINDOW_MS when the placement was
+ * made with a touch pointer: a finger's tap on the "undo" cross lands later
+ * and less precisely than a mouse click, so mobile players get a longer
+ * window to react (see js/input.js and js/render/ui.js's matching fade-out).
+ */
+export const TOUCH_CONFIRM_WINDOW_EXTRA_MS = 500;
+
 /** Radius of a ship's solid core, used for placement spacing (ships must not be dropped on top of each other). */
 export const SHIP_HITBOX_RADIUS = 0.015;
 
@@ -97,7 +105,7 @@ export const MAX_SWIPE_SPEED = 3.0;
 export const MIN_SHOT_DISTANCE = 0.1;
 
 /** Longest possible blind shot distance. */
-export const MAX_SHOT_DISTANCE = 0.9;
+export const MAX_SHOT_DISTANCE = 0.8;
 
 /** Time limit (ms) to complete the swipe once the screen goes black; too slow triggers a retry. */
 export const SWIPE_TIME_LIMIT_MS = 1500;
@@ -456,33 +464,31 @@ export function getPolygonBoundingRadius(polygon) {
 
 /**
  * Attempt to extend a freehand drag-path by one more point (CLAUDE.md
- * Action A): the path strictly follows the finger with no backtracking, so
- * there's no "closest legal point" to fall back to the way a single
- * straight segment could - instead, a candidate point that would break a
- * rule is simply dropped and the path freezes at its current end until the
- * finger moves back into legal territory. Two things can freeze it:
- *   - the segment from the path's last point to `candidate` would cut
- *     through an island's land shape (this is what makes hugging a
- *     coastline around a corner work: a path that curves around the
- *     obstacle keeps adding short legal segments, while a straight cut
- *     through it never gets appended);
- *   - the path's total length is already at `maxLengthPx`.
+ * Action A): the path strictly follows the finger with no backtracking. The
+ * only thing that freezes it is running out of length budget - crossing an
+ * island's land shape does NOT stop the path from growing; it is still
+ * appended, but the path is then flagged invalid (see isValidShipPlacementPath)
+ * so the renderer draws it red and, if the player releases while it's red,
+ * js/engine/actions.js's placeShip() refuses to spawn a ship - the whole
+ * drag is discarded and the player must start over (CLAUDE.md's Action A
+ * step 3: "the endpoint must be on open water").
  * Length is measured in pixel space (via the caller-supplied `lastPx`/
- * `candidatePx`) rather than relative units so the cap reads as a true
- * circle regardless of canvas aspect ratio - see input.js's
- * clampDragToMaxLength doc for why relative units would stretch it into an
- * ellipse. The path itself is stored/returned in relative coordinates,
- * matching every other collision shape in the engine.
+ * `candidatePx`) rather than relative units: relative x/y are stretched
+ * independently to fill a non-square canvas (see render/coords.js), so
+ * summing relative-unit segment lengths would make the reachable area an
+ * ellipse - wider than tall on a landscape screen - instead of a circle.
+ * input.js converts each point to pixels (scaling maxLengthPx by getUnit(),
+ * the same "don't stretch" reference size used for ship hulls and island
+ * shapes) before calling this. The path itself is stored/returned in
+ * relative coordinates, matching every other collision shape in the engine.
  * @param {Array<{x:number,y:number}>} path - existing path (relative coords), first point is the origin ship
  * @param {{x:number,y:number}} candidate - candidate next point (relative coords)
  * @param {{x:number,y:number}} lastPx - path's last point, in pixel coords
  * @param {{x:number,y:number}} candidatePx - `candidate`, in pixel coords
  * @param {number} lengthSoFarPx - the path's total length so far, in pixels
  * @param {number} maxLengthPx
- * @param {Array<{landShape: Array<[number,number]>}>} islandWorldShapes - already
- *   transformed to map-relative space (see getPlacedIslandWorldShapes)
  * @returns {{path: Array<{x:number,y:number}>, lengthPx: number, extended: boolean}}
- *   `extended` is false when the candidate was dropped, in which case `path`/`lengthPx` are returned unchanged.
+ *   `extended` is false when the candidate was dropped (length budget already spent), in which case `path`/`lengthPx` are returned unchanged.
  */
 export function tryExtendDragPath(
   path,
@@ -490,17 +496,9 @@ export function tryExtendDragPath(
   lastPx,
   candidatePx,
   lengthSoFarPx,
-  maxLengthPx,
-  islandWorldShapes
+  maxLengthPx
 ) {
   if (lengthSoFarPx >= maxLengthPx) return { path, lengthPx: lengthSoFarPx, extended: false };
-
-  const last = path[path.length - 1];
-  for (const island of islandWorldShapes) {
-    if (linePolygonIntersects([last.x, last.y], [candidate.x, candidate.y], island.landShape)) {
-      return { path, lengthPx: lengthSoFarPx, extended: false };
-    }
-  }
 
   const segmentPx = Math.hypot(candidatePx.x - lastPx.x, candidatePx.y - lastPx.y);
   const remainingPx = maxLengthPx - lengthSoFarPx;
@@ -516,6 +514,7 @@ export function tryExtendDragPath(
   // The candidate would blow the budget - land exactly on the cap instead
   // of dropping the point outright, same spirit as the old straight-line
   // clamp: the path stops growing right at maxLength rather than short of it.
+  const last = path[path.length - 1];
   const scale = remainingPx / segmentPx;
   const clipped = {
     x: last.x + (candidate.x - last.x) * scale,
@@ -547,10 +546,11 @@ export function getPlacedIslandWorldShapes(islandLibrary, map) {
  * every segment of the path must not cross any island's full land shape
  * (beach + mountain - `linePolygonIntersects` also catches a segment
  * endpoint landing inside a shape, not just crossing its edge), and the
- * path's final point must not land on top of another ship. In normal play
- * tryExtendDragPath() already keeps a live-built path from ever crossing
- * land, so the land check here is a defensive final gate (e.g. for a path
- * built directly, as in tests) rather than something that fires in practice.
+ * path's final point must not land on top of another ship. Unlike
+ * tryExtendDragPath() (which lets the path be dragged over land so it can
+ * be shown red), this is the real gate: input.js calls it live on every move
+ * to color the path, and actions.js's placeShip() calls it again on release
+ * to decide whether a ship actually spawns.
  * @param {Array<{x:number,y:number}>} path - relative coords, at least one point
  * @param {Array<{landShape: Array<[number,number]>}>} islandWorldShapes - already
  *   transformed to map-relative space (see getIslandWorldShapes)
@@ -590,4 +590,38 @@ export function swipeSpeedToDistance(speed) {
   const clampedSpeed = Math.max(MIN_SWIPE_SPEED, Math.min(MAX_SWIPE_SPEED, speed));
   const t = (clampedSpeed - MIN_SWIPE_SPEED) / (MAX_SWIPE_SPEED - MIN_SWIPE_SPEED);
   return MIN_SHOT_DISTANCE + t * (MAX_SHOT_DISTANCE - MIN_SHOT_DISTANCE);
+}
+
+/**
+ * Longest touch blind shot, lower than MAX_SHOT_DISTANCE: a finger swipe
+ * already gives finer control than a mouse flick, so a fast touch swipe
+ * should not reach as far as an equally fast mouse swipe.
+ */
+export const TOUCH_MAX_SHOT_DISTANCE = 0.6;
+
+/** At MIN_SWIPE_SPEED, a touch shot's distance is this fraction of the swipe's own physical travel distance - a slow finger swipe falls short of where the finger actually went. */
+export const TOUCH_MIN_DISTANCE_FACTOR = 0.6;
+
+/** At MAX_SWIPE_SPEED, a touch shot's distance is this multiple of the swipe's own physical travel distance - a fast finger swipe only slightly overshoots where the finger actually went. */
+export const TOUCH_MAX_DISTANCE_FACTOR = 1.3;
+
+/**
+ * Map a touch swipe's speed AND its own physical travel distance to a shot
+ * distance (CLAUDE.md open design decision: mobile gets a gentler mapping
+ * than swipeSpeedToDistance's fixed [MIN_SHOT_DISTANCE, MAX_SHOT_DISTANCE]
+ * range). Rather than extrapolating a short, fast flick into a long shot,
+ * the result stays anchored to how far the finger actually travelled
+ * (`swipeDistance`), scaled by a speed-dependent factor between
+ * TOUCH_MIN_DISTANCE_FACTOR (slow) and TOUCH_MAX_DISTANCE_FACTOR (fast), then
+ * clamped to [MIN_SHOT_DISTANCE, TOUCH_MAX_SHOT_DISTANCE].
+ * @param {number} speed - relative units per second
+ * @param {number} swipeDistance - the swipe's own physical travel distance, in relative units
+ * @returns {number} shot distance in relative units
+ */
+export function swipeSpeedToDistanceTouch(speed, swipeDistance) {
+  const clampedSpeed = Math.max(MIN_SWIPE_SPEED, Math.min(MAX_SWIPE_SPEED, speed));
+  const t = (clampedSpeed - MIN_SWIPE_SPEED) / (MAX_SWIPE_SPEED - MIN_SWIPE_SPEED);
+  const factor = TOUCH_MIN_DISTANCE_FACTOR + t * (TOUCH_MAX_DISTANCE_FACTOR - TOUCH_MIN_DISTANCE_FACTOR);
+  const distance = swipeDistance * factor;
+  return Math.max(MIN_SHOT_DISTANCE, Math.min(TOUCH_MAX_SHOT_DISTANCE, distance));
 }

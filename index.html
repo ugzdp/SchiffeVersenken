@@ -24,6 +24,17 @@
   <!-- UI overlay for turn indicator, buttons, blind-shooting cover, etc. -->
   <div id="ui-overlay"></div>
 
+  <!-- Shown only in portrait via a CSS media query (no JS): the map's
+       relative 0-1 coordinates scale x/y independently (see
+       js/render/coords.js), so a tall narrow screen stretches islands into
+       distorted shapes and the diagonal base-ship layout stops making
+       sense. Covers the whole screen and blocks touches from reaching the
+       canvas underneath until the device is rotated. -->
+  <div id="rotate-overlay">
+    <div class="rotate-overlay__icon">↻</div>
+    <p class="rotate-overlay__text">Please rotate your device<br /><span>Insel-Schlacht is played in landscape</span></p>
+  </div>
+
   <!-- type="module" gives us native ES module imports, no bundler needed -->
   <script type="module" src="js/main.js"></script>
 </body>

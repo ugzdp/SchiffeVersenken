@@ -65,8 +65,11 @@ body {
 #ui-overlay .menu-bar {
   position: absolute;
   top: env(safe-area-inset-top, 0px);
-  left: 0;
-  right: 0;
+  /* In landscape on a notched iPhone, the notch sits on one side rather
+     than the top, so the bar's own edges (not just its children) must
+     dodge it too, or the Settings button ends up under the sensor housing. */
+  left: env(safe-area-inset-left, 0px);
+  right: env(safe-area-inset-right, 0px);
   height: 48px;
 }
 
@@ -310,7 +313,12 @@ body {
    (Phase.CONFIRMING_PLACEMENT - see js/render/ui.js initPlacementConfirmUI).
    Positioned per-frame in JS next to the just-placed ship. Opacity-only
    show/hide so both the natural end-of-window fade and an early
-   opponent-triggered fade read as the same smooth transition. */
+   opponent-triggered fade read as the same smooth transition. --fading keeps
+   it tappable for the CONFIRM_FADE_MS/TOUCH_CONFIRM_FADE_MS duration in
+   ui.js after --active is removed, so a tap landing mid-fade still counts.
+   --touch (only set for placements dragged with a touch pointer) slows the
+   fade down, since a finger's tap lands later/less precisely than a mouse
+   click - keep this duration in sync with TOUCH_CONFIRM_FADE_MS in ui.js. */
 #ui-overlay .confirm-revert-btn {
   pointer-events: none;
   position: absolute;
@@ -331,9 +339,17 @@ body {
   transition: opacity 0.2s ease-out;
 }
 
-#ui-overlay .confirm-revert-btn--active {
+#ui-overlay .confirm-revert-btn--active,
+#ui-overlay .confirm-revert-btn--fading {
   pointer-events: auto;
+}
+
+#ui-overlay .confirm-revert-btn--active {
   opacity: 1;
+}
+
+#ui-overlay .confirm-revert-btn--touch {
+  transition: opacity 0.6s ease-out;
 }
 
 /* Start-game modal shown on page load, on top of everything else. */
@@ -427,4 +443,61 @@ body {
   font-weight: 700;
   text-align: center;
   color: #3fae4a;
+}
+
+/* Full-screen "please rotate" prompt, hidden by default and only shown in
+   portrait (see the media query below). Sits above #ui-overlay so it blocks
+   every touch from reaching the canvas until the device is turned. */
+#rotate-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: #04263b;
+  color: #fff;
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  text-align: center;
+  padding: 24px;
+}
+
+#rotate-overlay .rotate-overlay__icon {
+  font-size: 56px;
+  line-height: 1;
+  animation: rotate-hint 1.6s ease-in-out infinite;
+}
+
+#rotate-overlay .rotate-overlay__text {
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+#rotate-overlay .rotate-overlay__text span {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+@keyframes rotate-hint {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-90deg);
+  }
+}
+
+/* Only phones/small touch screens should be forced into landscape - a
+   narrow desktop browser window resized by hand should keep working, so
+   this also requires a coarse (touch) pointer, not just a portrait aspect
+   ratio. */
+@media (orientation: portrait) and (pointer: coarse) {
+  #rotate-overlay {
+    display: flex;
+  }
 }

@@ -55,16 +55,28 @@ animation.
 ### Turn structure (strictly alternating)
 On their turn, a player does **exactly one** of two actions:
 
-**Action A — Place a new ship (drag line):**
+**Action A — Place a new ship (freehand drag path):**
 1. The player touches **any of their own ships** (including the base ship) and
-   drags a line from it.
-2. The line has a **maximum length**. When the max is reached and the finger keeps
-   moving, the line stays at max length and only rotates toward the finger
-   direction — it never gets longer.
-3. The line must not cross any island (beach or mountain), and the endpoint must
-   be on open water (not on land, not on another ship).
-4. On release, a **new ship spawns at the end of the line**. The line disappears.
-   Turn ends.
+   drags a **freehand path** from it — the path strictly follows the finger,
+   point by point, with **no backtracking**.
+2. The path has a **maximum total length** (not straight-line distance — a
+   path that wanders spends its budget faster than a direct one). Once the
+   budget is spent the path **freezes** in place; further finger movement is
+   ignored until release.
+3. The path is allowed to be dragged across an island — it is drawn in red as
+   a warning rather than being blocked — but the endpoint must end up on open
+   water (not on land, not on another ship) and no segment of the path may
+   cross land, or the whole drag is rejected on release (no ship spawns, the
+   turn does not end, the player retries). Because the path can curve, this
+   is how a ship's placement can route around an island's corner instead of
+   being blocked by it.
+4. On a legal release, a **new ship spawns at the end of the path**, but the
+   turn does not end immediately: a small **"undo" cross** appears next to
+   the new ship for about a second (`Phase.CONFIRMING_PLACEMENT`). Tapping it
+   removes the ship and returns control to the same player. If it's not
+   tapped, control passes to the other player either when the window's timer
+   runs out, or immediately if the opponent touches one of their own ships to
+   start their turn early — whichever happens first.
 5. Fleets therefore grow over the match and spread across the map like a network.
 
 **Action B — Shoot (blind shot):**
@@ -84,7 +96,10 @@ On their turn, a player does **exactly one** of two actions:
 6. Any **enemy ship whose hitbox the shot line crosses sinks** (play a sinking
    animation, remove it from play). Shots stop at mountains; they pass over
    beach/forest and over open water.
-7. Whether hit or miss, the turn ends after one shot.
+7. A **miss, or a friendly-fire sinking of one of the shooter's own ships,
+   ends the turn** as normal. **Sinking an enemy ship grants the shooter
+   another turn** instead — they stay in `Phase.PLACING` and can immediately
+   place a ship or shoot again.
 
 ### Win condition
 - A player wins by **sinking the opponent's base ship**. Show a victory screen
@@ -139,10 +154,12 @@ js/engine/              PURE game logic — no rendering, no DOM, no Canvas acce
   gameState.js          single source of truth: map, ships, current player, phase
   rules.js              constants + pure functions (collision, line-polygon
                         intersection, point-in-polygon, speed→distance)
-  actions.js            placeShip(), fireShot(), endTurn() — take state + input,
-                        return/mutate state, never draw
+  actions.js            placeShip(), beginPlacementConfirmation(),
+                        commitPlacement(), revertPlacement(), fireShot(),
+                        endTurn() — take state + input, return/mutate state,
+                        never draw
 js/render/              ALL drawing code
-  renderer.js           ocean, islands (beach/mountain layers), ships, drag line
+  renderer.js           ocean, islands (beach/mountain layers), ships, drag path
   effects.js            water animation, shot line, sinking animation
   ui.js                 turn indicator, shoot button, red border, black overlay,
                         warnings, victory screen
@@ -154,8 +171,11 @@ DOM. The engine is the "backend", rendering is the "frontend". This keeps the do
 open for a real online backend later.
 
 **Game phases** (state machine in `gameState.js`):
+`placing` → (Action A: legal path released) → `confirmingPlacement` ("undo"
+cross shown) → next turn (or back to `placing`, same player, if reverted);
 `placing` → `aimingShot` (button pressed) → `blindShot` (screen black) →
-`shotResolve` (line shown) → next turn; plus `gameover`.
+`shotResolve` (line shown) → next turn, unless the shot sank an enemy ship,
+in which case back to `placing` for the same player instead; plus `gameover`.
 
 ## Coding Conventions
 

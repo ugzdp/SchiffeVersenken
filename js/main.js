@@ -1,4 +1,4 @@
-// main.js
+ // main.js
 //
 // Bootstrap: sets up the canvas, handles resizing, creates the single game
 // state instance, and starts a render loop driven by js/render/renderer.js.

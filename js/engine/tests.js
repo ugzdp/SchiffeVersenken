@@ -370,30 +370,18 @@ console.log("swipeSpeedToDistance");
 
 console.log("tryExtendDragPath");
 {
-  const noIslands = [];
-  const islandInTheWay = [
-    {
-      landShape: [
-        [0.4, 0.4],
-        [0.6, 0.4],
-        [0.6, 0.6],
-        [0.4, 0.6],
-      ],
-    },
-  ];
-
   {
     const path = [{ x: 0, y: 0.5 }];
-    const result = tryExtendDragPath(path, { x: 0.1, y: 0.5 }, { x: 0, y: 500 }, { x: 100, y: 500 }, 0, 1000, noIslands);
-    assert(result.extended === true, "a short legal segment extends the path");
+    const result = tryExtendDragPath(path, { x: 0.1, y: 0.5 }, { x: 0, y: 500 }, { x: 100, y: 500 }, 0, 1000);
+    assert(result.extended === true, "a short segment extends the path");
     assert(result.path.length === 2, "the extended path gains one point");
     assert(approxEqual(result.lengthPx, 100), "the running pixel length grows by the new segment's length");
   }
 
   {
-    // Budget already spent: even a legal, tiny segment is dropped.
+    // Budget already spent: even a tiny segment is dropped.
     const path = [{ x: 0, y: 0.5 }];
-    const result = tryExtendDragPath(path, { x: 0.01, y: 0.5 }, { x: 0, y: 500 }, { x: 10, y: 500 }, 100, 100, noIslands);
+    const result = tryExtendDragPath(path, { x: 0.01, y: 0.5 }, { x: 0, y: 500 }, { x: 10, y: 500 }, 100, 100);
     assert(result.extended === false, "a path already at its length budget is frozen");
     assert(result.path === path, "a frozen path is returned unchanged (same reference)");
   }
@@ -401,54 +389,21 @@ console.log("tryExtendDragPath");
   {
     // Segment would overshoot the remaining budget: clip to land exactly on the cap.
     const path = [{ x: 0, y: 0.5 }];
-    const result = tryExtendDragPath(path, { x: 0.2, y: 0.5 }, { x: 0, y: 500 }, { x: 200, y: 500 }, 0, 50, noIslands);
+    const result = tryExtendDragPath(path, { x: 0.2, y: 0.5 }, { x: 0, y: 500 }, { x: 200, y: 500 }, 0, 50);
     assert(result.extended === true, "an over-budget segment still extends the path, clipped");
     assert(approxEqual(result.lengthPx, 50), "a clipped segment lands the path exactly on maxLengthPx");
     assert(approxEqual(result.path[1].x, 0.05), "the clipped point is scaled back proportionally in relative coords too");
   }
 
   {
-    // Segment would cut through an island's land shape: frozen, regardless of budget.
+    // A segment cutting through an island's land shape still extends the
+    // path (it's no longer blocked at the coastline) - it's up to
+    // isValidShipPlacementPath to flag the path invalid so the renderer
+    // shows it red and the eventual placeShip() refuses to spawn a ship.
     const path = [{ x: 0.3, y: 0.5 }];
-    const result = tryExtendDragPath(
-      path,
-      { x: 0.7, y: 0.5 },
-      { x: 300, y: 500 },
-      { x: 700, y: 500 },
-      0,
-      1000,
-      islandInTheWay
-    );
-    assert(result.extended === false, "a segment cutting through land is dropped, not clipped");
-    assert(result.path === path, "a path frozen by land is returned unchanged (same reference)");
-  }
-
-  {
-    // The same overall reach is achievable by curving around the island in
-    // several short legal segments - this is what lets a player's freehand
-    // path go around a corner instead of just being blocked by it.
-    let path = [{ x: 0.3, y: 0.5 }];
-    let lengthPx = 0;
-    const hops = [
-      { x: 0.3, y: 0.3 },
-      { x: 0.7, y: 0.3 },
-      { x: 0.7, y: 0.5 },
-    ];
-    for (const hop of hops) {
-      const last = path[path.length - 1];
-      const result = tryExtendDragPath(
-        path,
-        hop,
-        { x: last.x * 1000, y: last.y * 1000 },
-        { x: hop.x * 1000, y: hop.y * 1000 },
-        lengthPx,
-        10000,
-        islandInTheWay
-      );
-      path = result.path;
-      lengthPx = result.lengthPx;
-    }
-    assert(path.length === 4, "curving around the island's corner in short hops extends the path every time");
+    const result = tryExtendDragPath(path, { x: 0.7, y: 0.5 }, { x: 300, y: 500 }, { x: 700, y: 500 }, 0, 1000);
+    assert(result.extended === true, "a segment cutting through land still extends the path");
+    assert(result.path.length === 2, "the path gains the point even though it crosses land");
   }
 }
 
