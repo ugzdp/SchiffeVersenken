@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marks js/engine as ES modules so 'node js/engine/tests.js' can run without affecting the rest of the project (browsers ignore package.json; this only changes how Node resolves files under this folder)."
+}

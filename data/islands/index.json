@@ -1,0 +1,17 @@
+{
+  "islands": [
+    "island_beach_round.json",
+    "island_beach_long.json",
+    "island_beach_irregular.json",
+    "island_beach_small.json",
+    "island_mountain_rocky1.json",
+    "island_mountain_rocky2.json",
+    "island_mountain_ridge.json",
+    "island_mountain_archipelago.json",
+    "island_combo_core_round.json",
+    "island_combo_core_long.json",
+    "island_combo_twin_peaks.json",
+    "island_base_west.json",
+    "island_base_east.json"
+  ]
+}
