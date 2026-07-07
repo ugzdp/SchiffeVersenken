@@ -31,11 +31,11 @@ island's own local geometry.
 | Field            | Type            | Required            | Description |
 |------------------|-----------------|----------------------|-------------|
 | `id`             | string          | yes                  | Unique id of this island shape within the library. |
-| `type`           | string          | yes                  | `"normal"` or `"base"`. `"base"` shapes contain a bay to hide a base ship and are used once per side when generating a map. |
+| `type`           | string          | yes                  | `"normal"` or `"base"`. `"base"` shapes contain a bay and/or mountain to hide a base ship visually and are used once per side when generating a map. |
 | `landShape`      | array of points | yes                  | Polygon outline of the whole island (beach/forest). One array of `[x, y]` pairs. Blocks ship placement and drag lines; **shots fly over it**. |
 | `mountainShapes` | array of polygons | no (default `[]`)  | Zero or more polygons, each an array of `[x, y]` pairs, describing gray mountain zones inside the island. Mountains block both ships **and** shots. Drawn on top of the land shape. |
 | `decorations`    | array of objects | no (default `[]`)   | Purely visual extras, e.g. `{ "kind": "palm", "x": 0.5, "y": 0.2 }`. Never affect collision. |
-| `baseAnchor`     | `{x, y}`        | only for `type: "base"` | The point where the base ship spawns, in the bay. |
+| `baseAnchor`     | `{x, y}`        | only for `type: "base"` | Marks the bay location on this island shape for authoring/visual reference. The base ship itself always spawns at a fixed map-space position (`BASE_SHIP_START` in `js/engine/rules.js`), not here. |
 
 ### Coordinate convention
 

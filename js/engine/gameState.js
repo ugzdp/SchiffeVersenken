@@ -69,11 +69,14 @@
  * @property {Ship[]} ships - every ship currently in play, both players combined
  * @property {1|2} currentPlayer - whose turn it is
  * @property {string} phase - one of the Phase constants below
+ * @property {{1: {shots: number, hits: number}, 2: {shots: number, hits: number}}} stats -
+ *   per-player shot/hit counters shown in the menu bar and victory modal
  */
 
 /** Turn/phase state machine values (see CLAUDE.md "Game phases"). */
 export const Phase = {
-  PLACING: "placing", // waiting for the current player to place a ship (drag line) or press Shoot
+  PLACING: "placing", // waiting for the current player to place a ship (drag path) or press Shoot
+  CONFIRMING_PLACEMENT: "confirmingPlacement", // ship just placed; the "undo" cross is up (see actions.js beginPlacementConfirmation)
   AIMING_SHOT: "aimingShot", // Shoot button pressed, waiting for the player to touch one of their ships
   BLIND_SHOT: "blindShot", // screen is blacked out, waiting for the swipe that determines the shot
   SHOT_RESOLVE: "shotResolve", // shot line is being shown to both players before the turn ends
@@ -92,6 +95,7 @@ export function createGameState() {
     ships: [],
     currentPlayer: 1,
     phase: Phase.PLACING,
+    stats: { 1: { shots: 0, hits: 0 }, 2: { shots: 0, hits: 0 } },
   };
 }
 
@@ -104,7 +108,7 @@ export function createGameState() {
  * @returns {void}
  */
 export function setIslandLibrary(state, islandLibrary) {
-  // TODO: implement in a later step
+  state.islands = islandLibrary;
 }
 
 /**
@@ -116,7 +120,7 @@ export function setIslandLibrary(state, islandLibrary) {
  * @returns {void}
  */
 export function setMap(state, map) {
-  // TODO: implement in a later step
+  state.map = map;
 }
 
 /**
@@ -128,7 +132,7 @@ export function setMap(state, map) {
  * @returns {void}
  */
 export function addShip(state, ship) {
-  // TODO: implement in a later step
+  state.ships.push(ship);
 }
 
 /**
@@ -139,7 +143,7 @@ export function addShip(state, ship) {
  * @returns {void}
  */
 export function removeShip(state, shipId) {
-  // TODO: implement in a later step
+  state.ships = state.ships.filter((ship) => ship.id !== shipId);
 }
 
 /**
@@ -151,7 +155,7 @@ export function removeShip(state, shipId) {
  * @returns {Ship[]}
  */
 export function getShipsByOwner(state, owner) {
-  // TODO: implement in a later step
+  return state.ships.filter((ship) => ship.owner === owner);
 }
 
 /**
@@ -162,7 +166,7 @@ export function getShipsByOwner(state, owner) {
  * @returns {Ship|undefined}
  */
 export function getBaseShip(state, owner) {
-  // TODO: implement in a later step
+  return state.ships.find((ship) => ship.owner === owner && ship.isBase);
 }
 
 /**
@@ -174,7 +178,7 @@ export function getBaseShip(state, owner) {
  * @returns {void}
  */
 export function setPhase(state, phase) {
-  // TODO: implement in a later step
+  state.phase = phase;
 }
 
 /**
@@ -184,7 +188,46 @@ export function setPhase(state, phase) {
  * @returns {void}
  */
 export function nextTurn(state) {
-  // TODO: implement in a later step
+  state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+  state.phase = Phase.PLACING;
+}
+
+/**
+ * Wipe every ship and hand control back to player 1 in the PLACING phase.
+ * Called by js/engine/actions.js's restartGame() after generating a fresh
+ * map, right before the two base ships are re-added.
+ * @param {GameState} state
+ * @returns {void}
+ */
+export function resetMatch(state) {
+  state.ships = [];
+  state.currentPlayer = 1;
+  state.phase = Phase.PLACING;
+  state.stats = { 1: { shots: 0, hits: 0 }, 2: { shots: 0, hits: 0 } };
+}
+
+/**
+ * Increment a player's shot counter, shown in the menu bar and victory
+ * modal (bullet icon). Called by js/engine/actions.js's fireShot() once per
+ * blind shot fired, whether or not it hits.
+ * @param {GameState} state
+ * @param {1|2} owner
+ * @returns {void}
+ */
+export function recordShot(state, owner) {
+  state.stats[owner].shots += 1;
+}
+
+/**
+ * Increment a player's hit counter, shown in the menu bar and victory modal
+ * (target icon). Called by js/engine/actions.js's fireShot() when a shot
+ * sinks a ship.
+ * @param {GameState} state
+ * @param {1|2} owner
+ * @returns {void}
+ */
+export function recordHit(state, owner) {
+  state.stats[owner].hits += 1;
 }
 
 /**
@@ -195,5 +238,5 @@ export function nextTurn(state) {
  * @returns {boolean}
  */
 export function isGameOver(state) {
-  // TODO: implement in a later step
+  return !getBaseShip(state, 1) || !getBaseShip(state, 2);
 }

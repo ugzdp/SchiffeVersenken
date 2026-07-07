@@ -43,8 +43,12 @@ animation.
   - Shot trajectories test **only against mountain shapes**.
 
 ### Ships and bases
-- Each player starts with exactly **one base ship**, placed in the bay of their
-  base island.
+- Each player starts with exactly **one base ship**, spawned at a **fixed
+  position every match** (player 1 near the bottom-left corner, player 2 near
+  the top-right) — independent of the random map, not tied to a base island's
+  bay.
+- The base ship is drawn with the **same hull shape** as normal ships, just
+  noticeably **larger**, so it reads as "special" at a glance.
 - All other ships are spawned during play (see turns). Ships never move after
   being placed.
 

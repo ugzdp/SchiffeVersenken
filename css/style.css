@@ -59,6 +59,157 @@ body {
   letter-spacing: 0.02em;
 }
 
+/* Top menu bar: Settings button in the left corner, player labels
+   centered. Sits above the canvas; individual children re-enable
+   pointer-events so the rest of the bar stays click-through. */
+#ui-overlay .menu-bar {
+  position: absolute;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  height: 48px;
+}
+
+#ui-overlay .menu-bar .settings-wrap {
+  position: absolute;
+  left: 12px;
+  top: 6px;
+}
+
+/* Settings dropdown: anchored under the Settings button, hidden until the
+   button is pressed. Opening/closing is a class toggle rather than the
+   `hidden` attribute so this rule's `display` can safely win. */
+#ui-overlay .settings-dropdown {
+  display: none;
+  flex-direction: column;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 170px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(4, 38, 59, 0.95);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+#ui-overlay .settings-dropdown--open {
+  display: flex;
+}
+
+#ui-overlay .settings-menu-item {
+  pointer-events: auto;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+#ui-overlay .settings-menu-item:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+#ui-overlay .menu-bar .players {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+}
+
+#ui-overlay .menu-bar .player-label {
+  pointer-events: auto;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 3px solid transparent;
+}
+
+/* Match each player's label color to their ship hull color (see
+   js/render/theme.js PLAYER_COLORS) so the label and fleet read as one. */
+#ui-overlay .menu-bar .player-label[data-player="1"] {
+  color: #2f7ed8;
+}
+
+#ui-overlay .menu-bar .player-label[data-player="2"] {
+  color: #8e3fd8;
+}
+
+/* Shown around whichever player's label matches state.currentPlayer. */
+#ui-overlay .menu-bar .player-label--active {
+  border-color: #3fae4a;
+}
+
+/* Shot/hit counters: one block per player, flanking the player labels in
+   the menu bar (see js/render/ui.js createStatCounters()) and repeated,
+   larger, in the victory modal. */
+#ui-overlay .stat-counters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#ui-overlay .stat-counter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#ui-overlay .stat-icon {
+  width: 15px;
+  height: 15px;
+}
+
+#ui-overlay .stat-counter--shots .stat-icon {
+  color: #f2c14e;
+}
+
+#ui-overlay .stat-counter--hits .stat-icon {
+  color: #d92d20;
+}
+
+/* Victory modal: one labeled counters block per player, below the "wins"
+   heading (see js/render/ui.js showVictoryScreen()). */
+#ui-overlay .victory-stats {
+  display: flex;
+  gap: 14px;
+}
+
+#ui-overlay .stat-counters--modal {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 18px;
+  font-size: 16px;
+}
+
+#ui-overlay .stat-counters--modal .stat-icon {
+  width: 20px;
+  height: 20px;
+}
+
+#ui-overlay .stat-counters-label {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
 #ui-overlay .btn {
   pointer-events: auto;
   padding: 10px 18px;
@@ -69,16 +220,211 @@ body {
   font-size: 16px;
 }
 
-/* Full-screen cover shown between turns so the other player doesn't
-   see the board while it's not their turn (hot-seat "blind" phase). */
+/* Round Shoot button, centered on the right edge of the screen. Light grey
+   at rest; turns red while shoot mode is active (Phase.AIMING_SHOT or
+   later - see js/render/ui.js). */
+#ui-overlay .shoot-btn {
+  position: absolute;
+  right: max(20px, env(safe-area-inset-right, 20px));
+  top: 50%;
+  transform: translateY(-50%);
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: 3px solid rgba(0, 0, 0, 0.25);
+  border-radius: 50%;
+  background: #d8d8d8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+}
+
+#ui-overlay .shoot-btn .shoot-icon {
+  width: 34px;
+  height: 34px;
+  fill: #333;
+}
+
+#ui-overlay .shoot-btn--active {
+  background: #d92d20;
+}
+
+#ui-overlay .shoot-btn--active .shoot-icon {
+  fill: #fff;
+}
+
+/* Red border shown while the current player has shoot mode active
+   (Phase.AIMING_SHOT or BLIND_SHOT - see CLAUDE.md Action B step 1). A
+   fixed inset box-shadow reads as a border without affecting layout. */
+#ui-overlay .red-border {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 0 rgba(217, 45, 32, 0);
+  transition: box-shadow 0.15s ease-out;
+}
+
+#ui-overlay .red-border--active {
+  box-shadow: inset 0 0 0 10px rgba(217, 45, 32, 0.85);
+}
+
+/* Full-screen black cover shown while a blind shot is being aimed
+   (Phase.BLIND_SHOT - CLAUDE.md Action B step 2): hides the board from
+   both players until the swipe is released. */
 #ui-overlay .blind-cover {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  font-size: 20px;
+  text-align: center;
+}
+
+#ui-overlay .blind-cover--active {
+  display: flex;
+}
+
+/* Transient "too slow" warning banner (CLAUDE.md Action B step 3). */
+#ui-overlay .warning-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: rgba(217, 45, 32, 0.9);
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+
+#ui-overlay .warning-banner--active {
+  display: block;
+}
+
+/* "Undo" cross shown during the post-placement revert window
+   (Phase.CONFIRMING_PLACEMENT - see js/render/ui.js initPlacementConfirmUI).
+   Positioned per-frame in JS next to the just-placed ship. Opacity-only
+   show/hide so both the natural end-of-window fade and an early
+   opponent-triggered fade read as the same smooth transition. */
+#ui-overlay .confirm-revert-btn {
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 2px solid #5a1512;
+  border-radius: 8px;
+  background: #e0483f;
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+#ui-overlay .confirm-revert-btn--active {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+/* Start-game modal shown on page load, on top of everything else. */
+#ui-overlay .modal-backdrop {
   pointer-events: auto;
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #000;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#ui-overlay .modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 32px 40px;
+  border-radius: 16px;
+  border: 3px solid #1f5c26;
+  background: #0a3d5c;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#ui-overlay .modal-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+#ui-overlay .modal-start-btn {
+  background: #3fae4a;
+  font-weight: 600;
+}
+
+/* Rules modal (Settings > Rules): two-column at-a-glance summary sized to
+   fit on screen without scrolling - see js/render/ui.js showRulesModal(). */
+#ui-overlay .rules-modal {
+  align-items: stretch;
+  gap: 14px;
+  padding: 20px 26px;
+  max-width: min(560px, 92vw);
+}
+
+#ui-overlay .rules-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 16px;
+}
+
+#ui-overlay .rules-close-btn {
+  padding: 4px 12px;
   font-size: 20px;
+  line-height: 1;
+  border-radius: 8px;
+}
+
+#ui-overlay .rules-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  width: 100%;
+}
+
+#ui-overlay .rules-col-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f2c14e;
+  margin-bottom: 8px;
+}
+
+#ui-overlay .rules-list {
+  list-style: disc;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+#ui-overlay .rules-win {
+  width: 100%;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 14px;
+  font-weight: 700;
   text-align: center;
+  color: #3fae4a;
 }
