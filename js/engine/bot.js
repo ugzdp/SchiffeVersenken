@@ -31,9 +31,15 @@
 //                          urgent), as long as it clears a basic
 //                          worthwhile-odds floor.
 //   P4  PLACE - advance toward the enemy base if a spot exists where the new
-//               ship would be under 40% likely to be hit; otherwise spread
-//               out for cover (behind mountains, away from the bot's own
-//               other ships) instead.
+//               ship would be under 40% likely to be hit; failing that, it
+//               may still gamble on a merely-risky spot (see
+//               acceptsRiskyAdvance) rather than always retreating to cover -
+//               a calculated bet that the enemy misses next turn, so a
+//               follow-up move can reach real safety. Otherwise spread out
+//               for cover (behind mountains, away from the bot's own other
+//               ships) instead, still leaning toward the enemy base over one
+//               that's further back so the fleet keeps pushing forward
+//               rather than ringing the bot's own base.
 // A shot/placement that turns out impossible always falls back to whatever
 // still is, rather than passing - see the fallbacks at the end of
 // decideBotMove().
@@ -67,13 +73,27 @@ import {
  *   in the bot's own judged shot distance - see hitProbability().
  * @property {number} thinkMs - artificial delay before the bot acts, so its
  *   turn reads as "thinking" rather than instant.
+ * @property {number} riskTolerance - [0,1] "standard risk aversion level"
+ *   for placement, higher = more willing to gamble - see acceptsRiskyAdvance().
  */
 
+// Every preset's aimErrorDeg/distanceErrorFactor sits a bit wider than
+// before: pAngle/pDistance in hitProbability() both clamp to 1 (a
+// guaranteed hit) once a target is close enough that its hitbox tolerance
+// already exceeds the error, so widening the error mostly costs accuracy on
+// shots that weren't already close-range certainties - i.e. exactly the far
+// shots, encouraging closer engagements, while point-blank shots stay
+// reliable. medium/hard are only nudged (not widened as far as easy) because
+// their own accuracy needs to stay meaningfully tighter than the generic
+// ENEMY_AIM_ERROR_DEG/ENEMY_DISTANCE_ERROR_FACTOR assumption below - if a
+// bot's own aim got as wide (or wider) than what it assumes of its human
+// opponent, its P0 (defend) vs P2 (snipe) thresholds would stop making
+// sense at any shared range.
 /** @type {Record<"easy"|"medium"|"hard", BotDifficultyConfig>} */
 export const BOT_DIFFICULTY = {
-  easy: { aimErrorDeg: 25, distanceErrorFactor: 0.35, thinkMs: 1400 },
-  medium: { aimErrorDeg: 12, distanceErrorFactor: 0.15, thinkMs: 900 },
-  hard: { aimErrorDeg: 4, distanceErrorFactor: 0.05, thinkMs: 500 },
+  easy: { aimErrorDeg: 30, distanceErrorFactor: 0.42, thinkMs: 1400, riskTolerance: 0.25 },
+  medium: { aimErrorDeg: 13, distanceErrorFactor: 0.16, thinkMs: 900, riskTolerance: 0.45 },
+  hard: { aimErrorDeg: 4.5, distanceErrorFactor: 0.055, thinkMs: 500, riskTolerance: 0.65 },
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +122,13 @@ export const BASE_SNIPE_PROB = 0.3;
 export const WORTHWHILE_SHOT_PROB = 0.35;
 /** A new ship placed somewhere this likely (or less) to be hit next turn counts as a "safe" step forward. */
 export const SAFE_ADVANCE_MAX_THREAT = 0.4;
+/**
+ * Above SAFE_ADVANCE_MAX_THREAT but below this, a spot is risky rather than
+ * suicidal - the bot may still gamble on it (see acceptsRiskyAdvance()),
+ * banking on the enemy's next shot missing to reach truly safe water on a
+ * follow-up placement. At or above this the risk is too high to ever try.
+ */
+export const RISKY_ADVANCE_MAX_THREAT = 0.65;
 /** Ships this close together (beyond the placement collision radius) count as "stacked". */
 const MIN_SHIP_SPACING = 0.05;
 
@@ -332,12 +359,21 @@ const PATH_GRID_RESOLUTION = 36;
 
 // Placement scoring weights (see scorePlacementCandidate) - tuned so a safe
 // advance always beats a purely defensive spot, and a priority-target shot
-// opportunity beats everything.
+// opportunity beats everything. ADVANCE_PROGRESS_WEIGHT is intentionally
+// large relative to ADVANCE_BASE_SCORE/SCORE_JITTER so that, among several
+// safe candidates, the one closest to the enemy base clearly wins the pick
+// instead of the choice coming down to near-random jitter - without this a
+// bot tends to place its new ships in a defensive ring right around its own
+// base rather than actually advancing across the map.
 const PRIORITY_TARGET_SCORE_SCALE = 1000;
 const ADVANCE_BASE_SCORE = 100;
-const ADVANCE_PROGRESS_WEIGHT = 20;
+const ADVANCE_PROGRESS_WEIGHT = 60;
 const COVER_WEIGHT = 10; // per enemy ship this spot is hidden from
 const EXPOSURE_WEIGHT = 50; // scaled by the single worst threat's probability
+// Even an "unsafe" (not-safe-to-advance) spot still leans toward the enemy
+// base when picking between similarly-covered options, so a defensive bot
+// spreads forward instead of retreating into a cluster around its own base.
+const COVER_PROGRESS_WEIGHT = 15;
 const STACKING_PENALTY_WEIGHT = 40;
 const SCORE_JITTER = 2; // small random tie-breaker so the bot isn't perfectly deterministic turn to turn
 
@@ -419,9 +455,16 @@ function isOpenWater(point, state, islandWorldShapes) {
  *   - otherwise: if the spot is "safe" (CLAUDE.md addendum's <40% chance any
  *     nearby enemy could hit a ship placed here), reward progress toward the
  *     enemy base - advancing always beats a purely defensive spot. If it's
- *     not safe, fall back to minimizing how many enemy ships could hit it at
- *     all (mountain cover, not "near land" - CLAUDE.md addendum) and how bad
- *     the single worst threat is.
+ *     merely "risky" (CLAUDE.md addendum: above the safe line but not
+ *     insanely high), the bot sometimes gambles on it anyway - see
+ *     acceptsRiskyAdvance() - scored as a discounted advance, banking on the
+ *     enemy missing next turn to reach real safety on a follow-up move. If
+ *     it's neither safe nor an accepted gamble, fall back to minimizing how
+ *     many enemy ships could hit it at all (mountain cover, not "near land" -
+ *     CLAUDE.md addendum) and how bad the single worst threat is, but still
+ *     prefer whichever covered spot is further toward the enemy base over
+ *     one that's further back - so a defensively-minded pick still nudges
+ *     the fleet forward instead of clustering back around the bot's own base.
  * Every branch is further penalized for landing right next to one of the
  * bot's own other ships (CLAUDE.md addendum: don't stack, advance or spread).
  */
@@ -437,16 +480,41 @@ function scorePlacementCandidate(state, difficulty, candidate, context) {
   }
 
   const { maxThreat, exposedCount } = assessPlacementRisk(point, enemyShips, mountainShapes, state.ships);
+  const progress = enemyBase ? distance(candidate.origin, enemyBase) - distance(point, enemyBase) : 0;
 
   let score;
   if (maxThreat < SAFE_ADVANCE_MAX_THREAT) {
-    const progress = enemyBase ? distance(candidate.origin, enemyBase) - distance(point, enemyBase) : 0;
     score = ADVANCE_BASE_SCORE + progress * ADVANCE_PROGRESS_WEIGHT;
+  } else if (maxThreat < RISKY_ADVANCE_MAX_THREAT && acceptsRiskyAdvance(maxThreat, difficulty)) {
+    // A calculated gamble: push into water that's more dangerous than
+    // "safe" rather than falling back to pure cover-seeking, discounted by
+    // just how risky it actually is.
+    score = ADVANCE_BASE_SCORE - maxThreat * EXPOSURE_WEIGHT + progress * ADVANCE_PROGRESS_WEIGHT;
   } else {
-    score = -exposedCount * COVER_WEIGHT - maxThreat * EXPOSURE_WEIGHT;
+    score = -exposedCount * COVER_WEIGHT - maxThreat * EXPOSURE_WEIGHT + progress * COVER_PROGRESS_WEIGHT;
   }
 
   return score - spacingPenalty + Math.random() * SCORE_JITTER;
+}
+
+/**
+ * Whether the bot accepts a placement in the "risky advance" band (maxThreat
+ * between SAFE_ADVANCE_MAX_THREAT and RISKY_ADVANCE_MAX_THREAT) as a
+ * calculated gamble rather than always falling back to pure cover-seeking -
+ * CLAUDE.md addendum: "if the risk is not insanely high but a little above
+ * the safe threshold, sometimes dangerous moves can be tried in order to get
+ * to safe territory with two tries". The chance scales with the bot's own
+ * riskTolerance (its "standard risk aversion level" per difficulty, see
+ * BOT_DIFFICULTY) and shrinks linearly across the band itself, so a spot
+ * just over the safe line is gambled on far more readily than one just
+ * under the "insanely high" cutoff.
+ * @param {number} maxThreat
+ * @param {BotDifficultyConfig} difficulty
+ */
+function acceptsRiskyAdvance(maxThreat, difficulty) {
+  const bandPosition = (maxThreat - SAFE_ADVANCE_MAX_THREAT) / (RISKY_ADVANCE_MAX_THREAT - SAFE_ADVANCE_MAX_THREAT);
+  const gambleChance = difficulty.riskTolerance * (1 - clamp(bandPosition, 0, 1));
+  return Math.random() < gambleChance;
 }
 
 /**
