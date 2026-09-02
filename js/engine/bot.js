@@ -11,15 +11,21 @@
 //
 // Every decision is driven by hitProbability() (below) - an estimated 0-1
 // chance a given shot actually sinks its target - rather than a hard-coded
-// range cutoff. Difficulty (BOT_DIFFICULTY) now only ever changes two
-// numbers, how wide the aim/distance error is, plus a pacing delay; every
-// other difference in behavior falls out of that same probability naturally
-// (a worse bot's own cone is wider, so its own shots clear the priority
-// thresholds below only at closer range - it never needs a separate range
-// cutoff to "feel" worse).
+// accuracy cutoff. Difficulty (BOT_DIFFICULTY) intentionally keeps
+// aimErrorDeg/distanceErrorFactor close together across presets now - a low
+// or medium bot is not meant to whiff shots it actually decides to take.
+// What separates easy/medium/hard is, in order of how much it actually
+// matters to how the bot "feels": how far it's willing to engage at all
+// (maxShotDistance - a lower difficulty sticks to close, near-sure shots and
+// simply never proposes the long-odds long shots a higher one will try) and
+// how early it reacts to danger (criticalThreatProb for defense,
+// riskTolerance for how readily it gambles on a risky placement - see
+// BOT_DIFFICULTY's typedef). The small residual aim/distance error gap
+// between presets is a light seasoning on top, not the main difference.
 //
 // Decision order for one turn (see decideBotMove), highest priority first:
-//   P0  DEFENSE   - any enemy ship likely enough (>20%) to hit OUR base is
+//   P0  DEFENSE   - any enemy ship likely enough (>20% on medium, see each
+//                   difficulty's own criticalThreatProb) to hit OUR base is
 //                   shot at if possible, or else placement tries to open a
 //                   shot on it - this beats every other consideration.
 //   P1  FREE KILL - any shot at all this good (>80%) is taken before
@@ -96,25 +102,34 @@ import {
  *   turn reads as "thinking" rather than instant.
  * @property {number} riskTolerance - [0,1] "standard risk aversion level"
  *   for placement, higher = more willing to gamble - see acceptsRiskyAdvance().
+ * @property {number} maxShotDistance - how far this difficulty will ever
+ *   consider firing at all (see gatherOwnShotCandidates) - the main lever
+ *   that separates easy/medium/hard: a lower-difficulty bot doesn't get
+ *   meaningfully worse aim so much as it refuses to engage at range and
+ *   sticks to close, close-to-sure shots.
+ * @property {number} criticalThreatProb - how likely an enemy ship must be
+ *   to hit OUR base before this difficulty treats it as a P0 emergency (see
+ *   decideBotMove) - "reactiveness to risk": a lower bar means the bot
+ *   panics/defends earlier, off a weaker threat; a higher bar means it lets
+ *   danger build up longer before reacting.
  */
 
-// Every preset's aimErrorDeg/distanceErrorFactor sits a bit wider than
-// before: pAngle/pDistance in hitProbability() both clamp to 1 (a
+// aimErrorDeg/distanceErrorFactor are now close together across difficulties
+// - a low/medium bot's own shots, once actually taken, are no longer wildly
+// inaccurate, since pAngle/pDistance in hitProbability() clamp to 1 (a
 // guaranteed hit) once a target is close enough that its hitbox tolerance
-// already exceeds the error, so widening the error mostly costs accuracy on
-// shots that weren't already close-range certainties - i.e. exactly the far
-// shots, encouraging closer engagements, while point-blank shots stay
-// reliable. medium/hard are only nudged (not widened as far as easy) because
-// their own accuracy needs to stay meaningfully tighter than the generic
-// ENEMY_AIM_ERROR_DEG/ENEMY_DISTANCE_ERROR_FACTOR assumption below - if a
-// bot's own aim got as wide (or wider) than what it assumes of its human
-// opponent, its P0 (defend) vs P2 (snipe) thresholds would stop making
-// sense at any shared range.
+// exceeds the error anyway. What actually separates the presets is how far
+// they're willing to engage at all (maxShotDistance) and how early they
+// react to danger (criticalThreatProb, riskTolerance) - see the typedef
+// above. hard keeps the tightest aim of the three, but the gap to
+// easy/medium is now small; it's still kept a little ahead of
+// ENEMY_AIM_ERROR_DEG/ENEMY_DISTANCE_ERROR_FACTOR below so its P0 (defend)
+// vs P2 (snipe) thresholds keep making sense at any shared range.
 /** @type {Record<"easy"|"medium"|"hard", BotDifficultyConfig>} */
 export const BOT_DIFFICULTY = {
-  easy: { aimErrorDeg: 30, distanceErrorFactor: 0.42, thinkMs: 1400, riskTolerance: 0.25 },
-  medium: { aimErrorDeg: 13, distanceErrorFactor: 0.16, thinkMs: 900, riskTolerance: 0.45 },
-  hard: { aimErrorDeg: 4.5, distanceErrorFactor: 0.055, thinkMs: 500, riskTolerance: 0.65 },
+  easy: { aimErrorDeg: 16, distanceErrorFactor: 0.22, thinkMs: 1400, riskTolerance: 0.2, maxShotDistance: 0.2, criticalThreatProb: 0.3 },
+  medium: { aimErrorDeg: 9, distanceErrorFactor: 0.12, thinkMs: 900, riskTolerance: 0.45, maxShotDistance: 0.4, criticalThreatProb: 0.2 },
+  hard: { aimErrorDeg: 4.5, distanceErrorFactor: 0.055, thinkMs: 500, riskTolerance: 0.7, maxShotDistance: 0.5, criticalThreatProb: 0.12 },
 };
 
 // ---------------------------------------------------------------------------
@@ -122,15 +137,15 @@ export const BOT_DIFFICULTY = {
 // feeds hitProbability() differs; these numbers are the strategy itself)
 // ---------------------------------------------------------------------------
 
-/** "within a 50% of screen radius" - every threat/target/placement-risk calc below is scoped to this. */
+/** "within a 50% of screen radius" - defense-scanning (assessBaseThreats) and placement-risk (assessPlacementRisk) are scoped to this; the bot's own shooting range is the separate, shorter, per-difficulty BOT_DIFFICULTY.*.maxShotDistance instead. */
 export const CONSIDERATION_RADIUS = 0.5;
 
 /** Generic assumed enemy accuracy for defensive/threat modeling - "the margin of error while aiming should be +-20%" split across both of hitProbability()'s error axes. */
 export const ENEMY_AIM_ERROR_DEG = 20;
 export const ENEMY_DISTANCE_ERROR_FACTOR = 0.2;
 
-/** An enemy ship this likely to hit OUR base is the single highest priority, full stop. */
-export const CRITICAL_BASE_THREAT_PROB = 0.2;
+/** Medium's own BOT_DIFFICULTY.medium.criticalThreatProb, re-exported as the baseline "an enemy ship this likely to hit OUR base is a P0 emergency" figure - easy reacts later (higher bar), hard reacts sooner (lower bar), see BOT_DIFFICULTY. */
+export const CRITICAL_BASE_THREAT_PROB = BOT_DIFFICULTY.medium.criticalThreatProb;
 /** Any shot at all this good is taken before anything else (once P0 is clear). */
 export const OPPORTUNISTIC_SHOT_PROB = 0.8;
 /** The enemy base is only worth lining up above this. */
@@ -259,7 +274,7 @@ export function decideBotMove(state, owner, difficultyKey) {
   const difficulty = BOT_DIFFICULTY[difficultyKey];
   const shotCandidates = gatherOwnShotCandidates(state, owner, difficulty);
   const baseThreats = assessBaseThreats(state, owner);
-  const criticalThreats = baseThreats.filter((t) => t.pHitMyBase > CRITICAL_BASE_THREAT_PROB);
+  const criticalThreats = baseThreats.filter((t) => t.pHitMyBase > difficulty.criticalThreatProb);
   // Every enemy ship's own "danger" number (its chance of hitting OUR base
   // from where it sits right now) - used below to pick the more dangerous
   // target over the merely easier one, not just to gate P0/P3.
@@ -370,9 +385,10 @@ function placementOpensDecentShot(state, path, target, difficulty) {
 // ---------------------------------------------------------------------------
 
 /**
- * Every (own ship, enemy ship) pair within CONSIDERATION_RADIUS with a
- * nonzero hitProbability(), using the bot's own difficulty accuracy - except
- * a pairing already missed MAX_MISSES_BEFORE_AVOIDING_ORIGIN times (CLAUDE.md
+ * Every (own ship, enemy ship) pair within this difficulty's own
+ * maxShotDistance with a nonzero hitProbability(), using the bot's own
+ * difficulty accuracy - except a pairing already missed
+ * MAX_MISSES_BEFORE_AVOIDING_ORIGIN times (CLAUDE.md
  * addendum: ships never move, so a repeated miss means that exact spot is
  * "too far away" for this target - stop proposing it and let the priority
  * cascade in decideBotMove() pivot to something else on its own).
@@ -390,7 +406,7 @@ function gatherOwnShotCandidates(state, owner, difficulty) {
   for (const originShip of ownShips) {
     for (const target of enemyShips) {
       const d = distance(originShip, target);
-      if (d > CONSIDERATION_RADIUS) continue;
+      if (d > difficulty.maxShotDistance) continue;
       if (getBotShotMissCount(state, originShip.id, target.id) >= MAX_MISSES_BEFORE_AVOIDING_ORIGIN) continue;
 
       const blockingShips = state.ships.filter((ship) => ship.id !== originShip.id && ship.id !== target.id);

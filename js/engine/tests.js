@@ -565,7 +565,7 @@ console.log("bot.js - hitProbability formula");
 console.log("bot.js - decideBotMove (P0: a critical threat to our base outranks a juicier P1 shot elsewhere)");
 {
   const myBase = { id: "my-base", owner: 2, x: 0.5, y: 0.5, isBase: true };
-  const enemyThreat = { id: "enemy-threat", owner: 1, x: 0.5, y: 0.58, isBase: false }; // 0.08 from our base
+  const enemyThreat = { id: "enemy-threat", owner: 1, x: 0.5, y: 0.65, isBase: false }; // 0.15 from our base - far enough that medium's tighter own-aim error doesn't saturate pThreatShot to a dead certainty below
   const decoyEnemy = { id: "decoy", owner: 1, x: 0.2, y: 0.5, isBase: false }; // 0.3 from our base - not a real threat
   const botShipForDecoy = { id: "bot-decoy-shooter", owner: 2, x: 0.22, y: 0.5, isBase: false }; // 0.02 from the decoy
 
@@ -604,7 +604,7 @@ console.log("bot.js - decideBotMove (P1: any >80% shot is taken immediately, abs
 console.log("bot.js - decideBotMove (P2: the enemy base gets its own, lower bar)");
 {
   const myBase = { id: "my-base-p2", owner: 2, x: 0.1, y: 0.1, isBase: true };
-  const enemyBase = { id: "enemy-base", owner: 1, x: 0.38, y: 0.1, isBase: true }; // 0.28 from our shooter - medium's own (now wider) error still clears BASE_SNIPE_PROB here
+  const enemyBase = { id: "enemy-base", owner: 1, x: 0.48, y: 0.1, isBase: true }; // 0.38 from our shooter - medium's own (now tighter) error still lands in the P2-only band at this range
 
   const pBase = hitProbability(myBase, enemyBase, shipHitRadius(enemyBase), BOT_DIFFICULTY.medium.aimErrorDeg, BOT_DIFFICULTY.medium.distanceErrorFactor, [], []);
   assert(
@@ -625,7 +625,7 @@ console.log("bot.js - decideBotMove (P2: the enemy base gets its own, lower bar)
 console.log("bot.js - decideBotMove (P2 negative: below its own bar, the base is left alone)");
 {
   const myBase = { id: "my-base-p2neg", owner: 2, x: 0.1, y: 0.1, isBase: true };
-  const enemyBase = { id: "enemy-base-far", owner: 1, x: 0.5, y: 0.1, isBase: true }; // 0.4 from our shooter
+  const enemyBase = { id: "enemy-base-far", owner: 1, x: 0.55, y: 0.1, isBase: true }; // 0.45 from our shooter - past medium's own maxShotDistance too
 
   const pBase = hitProbability(myBase, enemyBase, shipHitRadius(enemyBase), BOT_DIFFICULTY.medium.aimErrorDeg, BOT_DIFFICULTY.medium.distanceErrorFactor, [], []);
   assert(pBase < BASE_SNIPE_PROB, "at this range the base shot doesn't clear even P2's lower bar (test precondition)");
@@ -678,7 +678,7 @@ console.log("bot.js - decideBotMove (a fired shot's shape: unit direction, valid
 {
   const emptyMap = { seed: 5, islands: [] };
   const botShip = { id: "bot-1", owner: 2, x: 0.1, y: 0.5, isBase: false };
-  const enemyBase = { id: "enemy-base", owner: 1, x: 0.1 + 0.4, y: 0.5, isBase: true }; // distance 0.4 - a hard bot's tight error clears P1's 80% bar here
+  const enemyBase = { id: "enemy-base", owner: 1, x: 0.1 + 0.28, y: 0.5, isBase: true }; // distance 0.28 - within hard's maxShotDistance, and a hard bot's tight error clears P1's 80% bar here
   const state = { islands: [], map: emptyMap, ships: [botShip, enemyBase] };
 
   const move = decideBotMove(state, 2, "hard");
