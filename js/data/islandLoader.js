@@ -65,6 +65,24 @@ function validatePolygon(polygon, label, errors) {
 }
 
 /**
+ * Whether a landShape value is the multi-ring form - a list of separate
+ * landmass polygons (e.g. an atoll) - rather than the ordinary single
+ * polygon form. See data/schema.md: a ring's first element is a point
+ * ([x, y], two numbers); a multi-ring landShape's first element is itself
+ * a ring, so its own first element is an array.
+ * @param {*} landShape
+ * @returns {boolean}
+ */
+function isMultiRingLandShape(landShape) {
+  return (
+    Array.isArray(landShape) &&
+    landShape.length > 0 &&
+    Array.isArray(landShape[0]) &&
+    Array.isArray(landShape[0][0])
+  );
+}
+
+/**
  * Validate one island shape entry against the schema documented in
  * data/schema.md. Returns a list of human-readable error strings; an empty
  * list means the entry is valid.
@@ -88,6 +106,10 @@ export function validateIslandShape(entry) {
 
   if (entry.landShape === undefined) {
     errors.push(`"landShape" is required`);
+  } else if (isMultiRingLandShape(entry.landShape)) {
+    // Multi-landmass island (e.g. an atoll): validate each landmass as its
+    // own polygon.
+    entry.landShape.forEach((ring, i) => validatePolygon(ring, `landShape[${i}]`, errors));
   } else {
     validatePolygon(entry.landShape, "landShape", errors);
   }

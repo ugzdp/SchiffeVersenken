@@ -26,7 +26,7 @@
  * See data/schema.md for the full field-by-field format.
  * @property {string} id
  * @property {"normal"|"base"} type
- * @property {Array<[number, number]>} landShape - polygon, local 0-1 coords
+ * @property {Array<[number, number]>|Array<Array<[number, number]>>} landShape - polygon, local 0-1 coords; a list of polygons instead of one for a multi-landmass island (e.g. an atoll) - see js/engine/rules.js's landShapeRings()
  * @property {Array<Array<[number, number]>>} mountainShapes - polygons, local 0-1 coords
  * @property {Array<{kind: string, x: number, y: number}>} decorations
  * @property {{x: number, y: number}} [baseAnchor] - only present when type is "base"
@@ -63,14 +63,35 @@
  */
 
 /**
+ * @typedef {Object} StatCounters
+ * @property {number} shots - blind shots fired
+ * @property {number} hits - shots that sank a ship, own or enemy (CLAUDE.md friendly fire)
+ * @property {number} ownGoals - of `hits`, how many sank one of the shooter's own ships
+ * @property {number} shipsLost - this player's own ships sunk, by either player
+ */
+
+/**
  * @typedef {Object} GameState
  * @property {GeneratedMap|null} map - this match's generated map, or null before generation
  * @property {IslandLibraryEntry[]} islands - the static island shape library (loaded once, shared by all matches)
  * @property {Ship[]} ships - every ship currently in play, both players combined
  * @property {1|2} currentPlayer - whose turn it is
  * @property {string} phase - one of the Phase constants below
- * @property {{1: {shots: number, hits: number}, 2: {shots: number, hits: number}}} stats -
- *   per-player shot/hit counters shown in the menu bar and victory modal
+ * @property {{1: StatCounters, 2: StatCounters}} stats -
+ *   per-player counters shown in the menu bar and victory modal (shot/hit
+ *   icons, plus ownGoals/shipsLost, which never render directly but feed
+ *   js/engine/scoring.js's computeScore())
+ * @property {number|null} matchStartTime - timestamp (same clock as
+ *   requestAnimationFrame/event.timeStamp) when the current match's clock
+ *   started counting up, or null before a match has begun
+ * @property {number|null} matchEndTime - timestamp when the match was won
+ *   (base ship sunk), freezing the match clock; null while still playing
+ * @property {"pvp"|"pvb"} mode - "pvp" (two humans, hot-seat) or "pvb" (one
+ *   human, player 1, against the bot, always player 2 - see js/botController.js).
+ *   Chosen once on the start modal (js/render/ui.js initStartModal) and left
+ *   untouched by resetMatch(), so it survives "Restart game".
+ * @property {"easy"|"medium"|"hard"|null} botDifficulty - only meaningful
+ *   when mode is "pvb" (see js/engine/bot.js's BOT_DIFFICULTY)
  */
 
 /** Turn/phase state machine values (see CLAUDE.md "Game phases"). */
@@ -95,8 +116,27 @@ export function createGameState() {
     ships: [],
     currentPlayer: 1,
     phase: Phase.PLACING,
-    stats: { 1: { shots: 0, hits: 0 }, 2: { shots: 0, hits: 0 } },
+    stats: { 1: createStatCounters(), 2: createStatCounters() },
+    matchStartTime: null,
+    matchEndTime: null,
+    mode: "pvp",
+    botDifficulty: null,
   };
+}
+
+/**
+ * Record the start modal's mode/difficulty choice (js/render/ui.js
+ * initStartModal). Called once by main.js's startMatch(), before the first
+ * map is generated - not reset by resetMatch(), so it stays in effect across
+ * "Restart game" for the rest of the browser session.
+ * @param {GameState} state
+ * @param {"pvp"|"pvb"} mode
+ * @param {"easy"|"medium"|"hard"|null} [botDifficulty] - required when mode is "pvb"
+ * @returns {void}
+ */
+export function setMatchMode(state, mode, botDifficulty = null) {
+  state.mode = mode;
+  state.botDifficulty = mode === "pvb" ? botDifficulty : null;
 }
 
 /**
@@ -203,7 +243,41 @@ export function resetMatch(state) {
   state.ships = [];
   state.currentPlayer = 1;
   state.phase = Phase.PLACING;
-  state.stats = { 1: { shots: 0, hits: 0 }, 2: { shots: 0, hits: 0 } };
+  state.stats = { 1: createStatCounters(), 2: createStatCounters() };
+  state.matchStartTime = null;
+  state.matchEndTime = null;
+}
+
+/** @returns {StatCounters} a fresh, all-zero counter block for one player. */
+function createStatCounters() {
+  return { shots: 0, hits: 0, ownGoals: 0, shipsLost: 0 };
+}
+
+/**
+ * Start (or restart) the match clock shown as a counting-up timer in the
+ * menu bar. Called once a fresh match's base ships are in play - both at
+ * the very first match of a session and after "Restart game".
+ * @param {GameState} state
+ * @param {number} time - timestamp (same clock as requestAnimationFrame/
+ *   event.timeStamp) marking 00:00 for this match
+ * @returns {void}
+ */
+export function startMatchClock(state, time) {
+  state.matchStartTime = time;
+  state.matchEndTime = null;
+}
+
+/**
+ * Freeze the match clock at the moment the match is won. Idempotent - only
+ * the first call after a fresh startMatchClock() takes effect - so the
+ * victory screen always shows the time it actually took to win.
+ * @param {GameState} state
+ * @param {number} time - timestamp (same clock as startMatchClock) when the
+ *   winning shot resolved
+ * @returns {void}
+ */
+export function endMatchClock(state, time) {
+  if (state.matchEndTime === null) state.matchEndTime = time;
 }
 
 /**
@@ -228,6 +302,34 @@ export function recordShot(state, owner) {
  */
 export function recordHit(state, owner) {
   state.stats[owner].hits += 1;
+}
+
+/**
+ * Mark one of a player's `hits` as friendly fire (their shot sank one of
+ * their own ships rather than an enemy's). Never shown directly - it lets
+ * js/engine/scoring.js's computeScore() tell "enemy ships sunk" apart from
+ * `hits`, which counts both. Called by js/engine/actions.js's fireShot()
+ * alongside recordHit() whenever the sunk ship's owner is the shooter.
+ * @param {GameState} state
+ * @param {1|2} owner
+ * @returns {void}
+ */
+export function recordOwnGoal(state, owner) {
+  state.stats[owner].ownGoals += 1;
+}
+
+/**
+ * Increment a player's own-ships-lost counter (feeds computeScore() - see
+ * js/engine/scoring.js). Called by js/engine/actions.js's fireShot() for the
+ * sunk ship's owner whenever any ship (their own or an enemy's) sinks it -
+ * friendly fire counts against the ship's owner here, same as it would in
+ * real life.
+ * @param {GameState} state
+ * @param {1|2} owner - the sunk ship's owner, not necessarily the shooter
+ * @returns {void}
+ */
+export function recordShipLost(state, owner) {
+  state.stats[owner].shipsLost += 1;
 }
 
 /**

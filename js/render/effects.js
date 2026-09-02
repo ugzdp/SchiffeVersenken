@@ -14,10 +14,13 @@ const WATER_LINE_COLOR = "rgba(255, 255, 255, 0.08)";
 const WATER_ROW_COUNT = 6;
 
 const SHOT_LINE_DURATION_MS = 1400; // how long the tracer stays visible before fading out
+const HIT_FLASH_DURATION_MS = 500; // ship flashes solid red the instant it's hit, before it starts sinking
 const SINK_DURATION_MS = 1200;
 const WRECK_CROSS_FADE_OUT_MS = 1400; // starts the instant the ship's own fade-out ends
 const WRECK_CROSS_COLOR = "#e0483f";
 const WRECK_CROSS_OUTLINE = "#5a1512";
+const HIT_FLASH_HULL_COLOR = "#ff2b2b";
+const HIT_FLASH_OUTLINE_COLOR = "#5a1512";
 
 /**
  * Subtle animated water: a handful of slowly-drifting sine-wave ripple
@@ -96,7 +99,8 @@ export function drawShotLine(ctx, shotLine, width, height, time) {
 }
 
 /**
- * Draw ships that are mid-sink: shrink, spin and fade out over
+ * Draw ships that are mid-sink. The instant a ship is hit it flashes solid
+ * red for HIT_FLASH_DURATION_MS, then shrinks, spins and fades out over
  * SINK_DURATION_MS, with an expanding ripple ring standing in for the
  * splash. A red wreck cross marks the spot: it fades in over the same
  * SINK_DURATION_MS window as the ship's fade-out (starting at the same
@@ -104,7 +108,7 @@ export function drawShotLine(ctx, shotLine, width, height, time) {
  * over WRECK_CROSS_FADE_OUT_MS. These ships have already been removed
  * from state.ships by actions.js; the caller (input.js/actions.js) is
  * expected to keep them in this list only long enough for the whole
- * ship+cross animation to finish.
+ * flash+sink+cross animation to finish.
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array<{x:number, y:number, owner:1|2, isBase:boolean, startTime:number}>|null|undefined} sinkingShips
  * @param {number} width
@@ -114,7 +118,7 @@ export function drawShotLine(ctx, shotLine, width, height, time) {
 export function drawSinkingShips(ctx, sinkingShips, width, height, time) {
   if (!sinkingShips || sinkingShips.length === 0) return;
   const unit = getUnit(width, height);
-  const totalDuration = SINK_DURATION_MS + WRECK_CROSS_FADE_OUT_MS;
+  const totalDuration = HIT_FLASH_DURATION_MS + SINK_DURATION_MS + WRECK_CROSS_FADE_OUT_MS;
 
   for (const ship of sinkingShips) {
     const elapsed = time - ship.startTime;
@@ -123,8 +127,23 @@ export function drawSinkingShips(ctx, sinkingShips, width, height, time) {
     const pos = relToPixel(ship.x, ship.y, width, height);
     const baseRadius = (ship.isBase ? BASE_SHIP_RADIUS_FACTOR : SHIP_RADIUS_FACTOR) * unit;
 
-    if (elapsed <= SINK_DURATION_MS) {
-      const progress = elapsed / SINK_DURATION_MS;
+    if (elapsed <= HIT_FLASH_DURATION_MS) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, baseRadius, 0, Math.PI * 2);
+      ctx.fillStyle = HIT_FLASH_HULL_COLOR;
+      ctx.fill();
+      ctx.lineWidth = Math.max(2, baseRadius * 0.25);
+      ctx.strokeStyle = HIT_FLASH_OUTLINE_COLOR;
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+
+    const sinkElapsed = elapsed - HIT_FLASH_DURATION_MS;
+
+    if (sinkElapsed <= SINK_DURATION_MS) {
+      const progress = sinkElapsed / SINK_DURATION_MS;
       const colors = colorsForOwner(ship.owner);
 
       ctx.save();
@@ -152,7 +171,7 @@ export function drawSinkingShips(ctx, sinkingShips, width, height, time) {
 
       drawWreckCross(ctx, pos, baseRadius, progress);
     } else {
-      const fadeOutProgress = (elapsed - SINK_DURATION_MS) / WRECK_CROSS_FADE_OUT_MS;
+      const fadeOutProgress = (sinkElapsed - SINK_DURATION_MS) / WRECK_CROSS_FADE_OUT_MS;
       drawWreckCross(ctx, pos, baseRadius, 1 - fadeOutProgress);
     }
   }

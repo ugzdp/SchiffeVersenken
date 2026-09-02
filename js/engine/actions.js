@@ -5,10 +5,13 @@
 
 import {
   addShip,
+  endMatchClock,
   isGameOver,
   nextTurn,
   Phase,
   recordHit,
+  recordOwnGoal,
+  recordShipLost,
   recordShot,
   removeShip,
   resetMatch,
@@ -157,9 +160,16 @@ export function fireShot(state, originShip, direction, speed, time, options = {}
     removeShip(state, hitShip.id);
     state.sinkingShips = [...(state.sinkingShips || []), { ...hitShip, startTime: time }];
     recordHit(state, originShip.owner);
+    recordShipLost(state, hitShip.owner); // feeds computeScore() - see js/engine/scoring.js
+    if (hitShip.owner === originShip.owner) recordOwnGoal(state, originShip.owner);
   }
 
-  setPhase(state, isGameOver(state) ? Phase.GAMEOVER : Phase.SHOT_RESOLVE);
+  if (isGameOver(state)) {
+    endMatchClock(state, time); // freezes the match clock for the victory screen
+    setPhase(state, Phase.GAMEOVER);
+  } else {
+    setPhase(state, Phase.SHOT_RESOLVE);
+  }
 
   return { sunkShip: hitShip || null };
 }

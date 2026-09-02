@@ -73,10 +73,21 @@ body {
   height: 48px;
 }
 
-#ui-overlay .menu-bar .settings-wrap {
+/* Groups the Settings button and the standalone Rules button together in
+   the bar's left corner (see js/render/ui.js initMenuBar()). */
+#ui-overlay .menu-bar .menu-bar-left {
   position: absolute;
   left: 12px;
   top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Only needs to be a positioning context now (for the dropdown below it) -
+   its place in the bar comes from menu-bar-left's flex layout instead. */
+#ui-overlay .menu-bar .settings-wrap {
+  position: relative;
 }
 
 /* Settings dropdown: anchored under the Settings button, hidden until the
@@ -151,6 +162,18 @@ body {
   border-color: #3fae4a;
 }
 
+/* Match clock: counts up from 00:00, centered between the two player
+   labels (see js/render/ui.js updateTimer()). */
+#ui-overlay .menu-bar .match-timer {
+  align-self: center;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  opacity: 0.85;
+}
+
 /* Shot/hit counters: one block per player, flanking the player labels in
    the menu bar (see js/render/ui.js createStatCounters()) and repeated,
    larger, in the victory modal. */
@@ -183,6 +206,17 @@ body {
 
 #ui-overlay .stat-counter--hits .stat-icon {
   color: #d92d20;
+}
+
+/* Skill score (see js/engine/scoring.js computeScore()) - the headline
+   number in each stat bubble, so it gets its own color and extra weight
+   rather than just matching the shots/hits counters next to it. */
+#ui-overlay .stat-counter--score .stat-icon {
+  color: #3fae4a;
+}
+
+#ui-overlay .stat-counter--score .stat-counter-value {
+  font-weight: 800;
 }
 
 /* Victory modal: one labeled counters block per player, below the "wins"
@@ -386,6 +420,16 @@ body {
   font-weight: 600;
 }
 
+/* "Time to win" line on the victory screen (see js/render/ui.js
+   showVictoryScreen()) - sits right under the winner title. */
+#ui-overlay .victory-time {
+  margin: -12px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
 /* Rules modal (Settings > Rules): two-column at-a-glance summary sized to
    fit on screen without scrolling - see js/render/ui.js showRulesModal(). */
 #ui-overlay .rules-modal {
@@ -443,6 +487,145 @@ body {
   font-weight: 700;
   text-align: center;
   color: #3fae4a;
+}
+
+/* Leaderboard modal (Settings > Leaderboard): all-time totals per seat,
+   read from js/data/leaderboardStore.js - see js/render/ui.js
+   showLeaderboardModal(). Reuses .rules-header/.rules-col-title/.modal for
+   a consistent look with the Rules modal. */
+#ui-overlay .leaderboard-modal {
+  align-items: stretch;
+  gap: 14px;
+  padding: 20px 26px;
+  max-width: min(420px, 92vw);
+}
+
+#ui-overlay .leaderboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  width: 100%;
+}
+
+#ui-overlay .leaderboard-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#ui-overlay .leaderboard-stats > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+#ui-overlay .leaderboard-stats dt {
+  opacity: 0.75;
+}
+
+#ui-overlay .leaderboard-stats dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+#ui-overlay .leaderboard-note {
+  width: 100%;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 12px;
+  opacity: 0.7;
+  text-align: center;
+}
+
+#ui-overlay .leaderboard-reset-btn {
+  align-self: center;
+  background: rgba(217, 45, 32, 0.25);
+}
+
+/* Post-game "Top Scores" high-score screen, reached via the victory screen's
+   Continue button - see js/render/ui.js showHighScoresScreen(). A small
+   table: one header row of column labels (#/Score/Shots/Hits/Time) plus up
+   to three ranked data rows, each row a flex line of five equal-ish cells
+   (see createHighScoreRow()) so every row's columns line up underneath the
+   header without needing CSS Grid across separate row elements. */
+#ui-overlay .high-scores-modal {
+  gap: 16px;
+  min-width: 280px;
+}
+
+#ui-overlay .high-scores-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+#ui-overlay .high-scores-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+#ui-overlay .high-scores-row > span {
+  flex: 1;
+  text-align: center;
+}
+
+/* Rank column: narrow and left-aligned rather than sharing the other four
+   columns' equal width. */
+#ui-overlay .high-scores-row > span:first-child {
+  flex: 0 0 26px;
+  text-align: left;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+/* Score column: the sort key, so it stays visually louder than the three
+   supporting stats next to it. */
+#ui-overlay .high-scores-row > span:nth-child(2) {
+  font-weight: 800;
+  color: #3fae4a;
+}
+
+/* Header row: column labels, no background/border of its own. */
+#ui-overlay .high-scores-header {
+  background: transparent;
+  padding: 0 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+#ui-overlay .high-scores-header > span:nth-child(2) {
+  color: inherit; /* undo the data row's green score color for the label itself */
+  font-weight: 700;
+}
+
+/* The row for the match that was just played, wherever it lands. */
+#ui-overlay .high-scores-row--current {
+  background: rgba(242, 193, 78, 0.22);
+  border: 2px solid #f2c14e;
+  padding: 6px 12px; /* minus the border's 2px so the row doesn't grow */
+}
+
+#ui-overlay .high-scores-row--current > span {
+  color: #f2c14e;
+  opacity: 1;
+}
+
+/* Visual break between the top-three list and the just-played match's own
+   row when it didn't crack the top three. */
+#ui-overlay .high-scores-gap {
+  height: 10px;
 }
 
 /* Full-screen "please rotate" prompt, hidden by default and only shown in

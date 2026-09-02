@@ -32,7 +32,7 @@ island's own local geometry.
 |------------------|-----------------|----------------------|-------------|
 | `id`             | string          | yes                  | Unique id of this island shape within the library. |
 | `type`           | string          | yes                  | `"normal"` or `"base"`. `"base"` shapes contain a bay and/or mountain to hide a base ship visually and are used once per side when generating a map. |
-| `landShape`      | array of points | yes                  | Polygon outline of the whole island (beach/forest). One array of `[x, y]` pairs. Blocks ship placement and any segment of a ship-placement drag path; **shots fly over it**. |
+| `landShape`      | array of points, or array of polygons | yes | Outline of the whole island (beach/forest). Usually one array of `[x, y]` pairs (a single landmass). For an island made of several **separate** landmasses with open, sailable water between them (e.g. an atoll), use a list of such polygons instead - one per landmass - each with at least 3 points. Blocks ship placement and any segment of a ship-placement drag path; **shots fly over it**. |
 | `mountainShapes` | array of polygons | no (default `[]`)  | Zero or more polygons, each an array of `[x, y]` pairs, describing gray mountain zones inside the island. Mountains block both ships **and** shots. Drawn on top of the land shape. |
 | `decorations`    | array of objects | no (default `[]`)   | Purely visual extras, e.g. `{ "kind": "palm", "x": 0.5, "y": 0.2 }`. Never affect collision. |
 | `baseAnchor`     | `{x, y}`        | only for `type: "base"` | Marks the bay location on this island shape for authoring/visual reference. The base ship itself always spawns at a fixed map-space position (`BASE_SHIP_START` in `js/engine/rules.js`), not here. |
@@ -47,6 +47,28 @@ regardless of how large or where the island ends up once placed on a map.
 The map generator scales, rotates and positions these local coordinates; the
 renderer is the only place that ever converts anything to actual screen
 pixels.
+
+### Multi-landmass `landShape` (atolls)
+
+An island is normally one landmass, so `landShape` is a flat array of
+`[x, y]` points — one polygon. To describe several separate landmasses with
+open water between them, nest one more level: `landShape` becomes a list of
+polygons instead of a single one, each with its own ring of at least 3
+points:
+
+```json
+"landShape": [
+  [[0.1, 0.1], [0.2, 0.05], [0.25, 0.2]],
+  [[0.6, 0.55], [0.75, 0.5], [0.7, 0.7]]
+]
+```
+
+Everything that reads `landShape` (ship-placement collision, the map
+generator's placement spacing, the renderer) tells the two forms apart by
+checking whether the first element is a point (two numbers) or itself a
+ring (an array of points) — see `js/engine/rules.js`'s `landShapeRings()`.
+`mountainShapes` and `decorations` are unaffected: they stay in local 0-1
+space the same way regardless of how many landmasses `landShape` has.
 
 ## Generated map — runtime object
 

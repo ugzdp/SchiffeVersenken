@@ -32,6 +32,20 @@ import {
   tryExtendDragPath,
 } from "./engine/rules.js";
 import { relToPixel, getUnit } from "./render/coords.js";
+import {
+  playHitEnemy,
+  playHitFriendly,
+  playPlaceShip,
+  playPlacementRejected,
+  playShotFired,
+  playSplash,
+  playTooSlow,
+  playUndo,
+  playVictory,
+  startDragWater,
+  stopDragWater,
+  unlockAudio,
+} from "./render/audio.js";
 
 // Generous tap target in CSS pixels - bigger than the drawn ship hull so
 // touch input on a small ship icon is forgiving.
@@ -76,6 +90,19 @@ export function initInput(canvas, state, onTurnChanged) {
   let confirmTimer = null; // setTimeout id for the pending-placement revert window
 
   canvas.addEventListener("pointerdown", (event) => {
+    // Every pointerdown is a trusted user gesture, so this is the earliest
+    // safe place to create/resume the AudioContext (iOS Safari refuses to
+    // start audio outside one). A no-op once already running.
+    unlockAudio();
+
+    // Single-player: the bot (always player 2) plays its own turn through
+    // js/botController.js, not pointer events - ignore touches while it's
+    // the bot's turn so the human can't act on its behalf. The one
+    // exception (CONFIRMING_PLACEMENT) still needs to fall through: it's the
+    // human's own early-commit touch that's allowed to interrupt the bot's
+    // post-placement window, same as it would interrupt a human's.
+    if (state.mode === "pvb" && state.currentPlayer === 2 && state.phase !== Phase.CONFIRMING_PLACEMENT) return;
+
     if (state.phase === Phase.CONFIRMING_PLACEMENT) {
       const rel = pixelToRel(canvas, event);
       const nextPlayer = state.currentPlayer === 1 ? 2 : 1;
@@ -100,6 +127,7 @@ export function initInput(canvas, state, onTurnChanged) {
         owner: state.currentPlayer,
         valid: false, // a zero-length path always lands back on the origin ship
       };
+      startDragWater(); // soft ripple loop for as long as the path is being dragged
       return;
     }
 
@@ -156,14 +184,18 @@ export function initInput(canvas, state, onTurnChanged) {
       dragPath = null;
       dragPathLengthPx = 0;
       state.dragPath = null;
+      stopDragWater();
 
       const ship = placeShip(state, owner, path);
       if (ship) {
+        playPlaceShip();
         const isTouch = event.pointerType === "touch";
         beginPlacementConfirmation(state, ship, event.timeStamp, isTouch);
         const windowMs = PLACEMENT_CONFIRM_WINDOW_MS + (isTouch ? TOUCH_CONFIRM_WINDOW_EXTRA_MS : 0);
         confirmTimer = setTimeout(commitPendingPlacement, windowMs);
         if (onTurnChanged) onTurnChanged();
+      } else {
+        playPlacementRejected();
       }
       return;
     }
@@ -178,6 +210,7 @@ export function initInput(canvas, state, onTurnChanged) {
     dragPath = null;
     dragPathLengthPx = 0;
     state.dragPath = null;
+    stopDragWater();
     if (blindShot) {
       setPhase(state, Phase.AIMING_SHOT);
       blindShot = null;
@@ -211,6 +244,7 @@ export function initInput(canvas, state, onTurnChanged) {
     }
     if (state.phase !== Phase.CONFIRMING_PLACEMENT) return;
     revertPlacement(state);
+    playUndo();
     if (onTurnChanged) onTurnChanged();
   }
 
@@ -245,6 +279,7 @@ function resolveBlindShot(canvas, state, blindShot, event, onTurnChanged) {
   if (elapsedMs > SWIPE_TIME_LIMIT_MS || dist < MIN_SWIPE_DISTANCE) {
     setPhase(state, Phase.AIMING_SHOT);
     state.warning = { text: "Too slow - try again!", until: event.timeStamp + 1500 };
+    playTooSlow();
     return;
   }
 
@@ -257,6 +292,7 @@ function resolveBlindShot(canvas, state, blindShot, event, onTurnChanged) {
   const speed = Math.max(blindShot.peakSpeed, avgSpeed);
   const isTouch = event.pointerType === "touch";
 
+  playShotFired();
   const { sunkShip } = fireShot(state, blindShot.originShip, direction, speed, event.timeStamp, {
     isTouch,
     swipeDistance: dist,
@@ -271,6 +307,16 @@ function resolveBlindShot(canvas, state, blindShot, event, onTurnChanged) {
   // sunk ship of the shooter's own (friendly fire) still ends the turn as
   // normal, same as a miss.
   const sankEnemyShip = sunkShip && sunkShip.owner !== blindShot.originShip.owner;
+  const sankOwnShip = sunkShip && sunkShip.owner === blindShot.originShip.owner;
+
+  // Impact sound plays a beat after the cannon fire, like a shell in flight,
+  // and victory's fanfare a beat after that so the two don't blur together.
+  setTimeout(() => {
+    if (sankEnemyShip) playHitEnemy();
+    else if (sankOwnShip) playHitFriendly();
+    else playSplash();
+    if (state.phase === Phase.GAMEOVER) setTimeout(playVictory, 350);
+  }, 160);
 
   if (state.phase !== Phase.GAMEOVER) {
     setTimeout(() => {

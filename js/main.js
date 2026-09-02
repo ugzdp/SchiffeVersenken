@@ -7,7 +7,7 @@
 // and wires up freehand drag-path ship placement (js/input.js). This file
 // holds the project's one allowed global: `state`.
 
-import { createGameState, setIslandLibrary, setMap, addShip } from "./engine/gameState.js";
+import { createGameState, setIslandLibrary, setMap, addShip, startMatchClock } from "./engine/gameState.js";
 import {
   initMenuBar,
   initPlacementConfirmUI,
@@ -18,6 +18,7 @@ import {
   updatePlacementConfirmUI,
   updateShootButton,
   updateShootUI,
+  updateTimer,
 } from "./render/ui.js";
 import { loadIslandLibrary } from "./data/islandLoader.js";
 import { generateMap } from "./engine/mapGenerator.js";
@@ -55,6 +56,7 @@ async function startMatch() {
   const seed = Math.floor(Math.random() * 2 ** 31);
   setMap(state, generateMap(state.islands, seed));
   spawnBaseShips(state);
+  startMatchClock(state, performance.now());
 
   initMenuBar(uiOverlay, state, { onRestart: () => restartMatch() });
   initShootButton(uiOverlay, state);
@@ -75,6 +77,7 @@ async function startMatch() {
  */
 function restartMatch() {
   restartGame(state);
+  startMatchClock(state, performance.now());
   if (inputHandle) inputHandle.cancelPendingPlacementTimer();
   state.dragPath = null;
   state.pendingPlacement = null;
@@ -134,6 +137,8 @@ function gameLoop(time) {
   // is still null and no base ships have been spawned yet, which would
   // otherwise make isGameOver() look true (no base ships => "missing").
   if (state.map) {
+    updateTimer(uiOverlay, state, time);
+    updateMenuBar(uiOverlay, state, time); // keeps each stat bubble's live score (see js/engine/scoring.js) ticking every frame
     updateShootUI(uiOverlay, state, time, { onRematch: () => restartMatch() });
     updatePlacementConfirmUI(uiOverlay, state, cssWidth, cssHeight);
   }

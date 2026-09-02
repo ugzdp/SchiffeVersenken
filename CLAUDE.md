@@ -118,7 +118,7 @@ Each island shape is one JSON file:
 {
   "id": "island_07",
   "type": "normal",            // "normal" | "base"
-  "landShape": [[0.0, 0.1], [0.2, 0.0], ...],   // polygon, local coords 0–1
+  "landShape": [[0.0, 0.1], [0.2, 0.0], ...],   // polygon, local coords 0–1 (or a list of polygons for a multi-landmass island, e.g. an atoll — see data/schema.md)
   "mountainShapes": [ [[0.3, 0.3], ...] ],      // zero or more polygons inside landShape
   "decorations": [ { "kind": "palm", "x": 0.5, "y": 0.2 } ],
   "baseAnchor": { "x": 0.15, "y": 0.5 }         // base ships spawn point, only for type "base"

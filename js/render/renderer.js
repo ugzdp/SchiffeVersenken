@@ -180,18 +180,38 @@ function drawHull(ctx, colors, radius) {
   ctx.stroke();
 }
 
+/**
+ * Normalize a landShape field (raw JSON, local 0-1 coords) into a list of
+ * one or more polygon rings, so drawing code can treat a plain
+ * single-landmass island and a multi-landmass one (e.g. an atoll) the
+ * same way. Mirrors js/engine/rules.js's landShapeRings() - duplicated
+ * here in full, rather than imported, so js/render/ stays fully
+ * independent of js/engine/ per CLAUDE.md's engine/render separation.
+ * @param {Array<[number,number]>|Array<Array<[number,number]>>} landShape
+ * @returns {Array<Array<[number,number]>>}
+ */
+function landRings(landShape) {
+  if (!landShape || landShape.length === 0) return [];
+  const isMultiRing = Array.isArray(landShape[0][0]);
+  return isMultiRing ? landShape : [landShape];
+}
+
 function drawShallowWater(ctx, landShape, placement, width, height) {
-  const expanded = landShape.map(([x, y]) => [
-    0.5 + (x - 0.5) * SHALLOW_WATER_MARGIN,
-    0.5 + (y - 0.5) * SHALLOW_WATER_MARGIN,
-  ]);
-  const points = islandPolygonToPixels(expanded, placement, width, height);
-  fillPolygon(ctx, points, SHALLOW_WATER_COLOR);
+  for (const ring of landRings(landShape)) {
+    const expanded = ring.map(([x, y]) => [
+      0.5 + (x - 0.5) * SHALLOW_WATER_MARGIN,
+      0.5 + (y - 0.5) * SHALLOW_WATER_MARGIN,
+    ]);
+    const points = islandPolygonToPixels(expanded, placement, width, height);
+    fillPolygon(ctx, points, SHALLOW_WATER_COLOR);
+  }
 }
 
 function drawBeach(ctx, landShape, placement, width, height) {
-  const points = islandPolygonToPixels(landShape, placement, width, height);
-  fillAndStrokePolygon(ctx, points, BEACH_COLOR, BEACH_OUTLINE, BEACH_LINE_WIDTH);
+  for (const ring of landRings(landShape)) {
+    const points = islandPolygonToPixels(ring, placement, width, height);
+    fillAndStrokePolygon(ctx, points, BEACH_COLOR, BEACH_OUTLINE, BEACH_LINE_WIDTH);
+  }
 }
 
 function drawMountain(ctx, mountainShape, placement, width, height) {
@@ -231,13 +251,53 @@ function drawDecoration(ctx, decoration, placement, width, height) {
   ctx.restore();
 }
 
+// How far into each edge a corner gets rounded, as a fraction of that
+// edge's length (0 = sharp polygon, 0.5 = corner rounded all the way to
+// the edge midpoints on both sides). Kept below 0.5 so long islands still
+// read as their original silhouette instead of blurring into a blob.
+const CORNER_ROUND_FACTOR = 0.28;
+
+/**
+ * Trace a closed polygon into ctx's current path with every corner
+ * rounded, instead of the sharp vertices raw lineTo segments would give.
+ * This is pure decoration: it only changes how the shape is *drawn*, the
+ * actual landShape/mountainShapes polygons used for ship and shot
+ * collision (js/engine/rules.js) are never touched, so gameplay stays
+ * exactly as precise as before - only the coastline looks smoother.
+ *
+ * Technique: for each vertex, stop short of it by CORNER_ROUND_FACTOR of
+ * the incoming edge, run a straight line along the untouched middle part
+ * of each edge, then curve through the vertex with quadraticCurveTo to
+ * the matching point on the outgoing edge. Small islands (few, close
+ * vertices) round almost like a circle; larger ones keep straighter
+ * stretches of coastline between gently rounded corners.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array<{x:number,y:number}>} points
+ */
+function traceSmoothPolygon(ctx, points) {
+  const n = points.length;
+  if (n < 3) return; // not a real polygon - nothing sensible to trace
+
+  const along = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+  const lastToFirst = along(points[n - 1], points[0], 1 - CORNER_ROUND_FACTOR);
+  ctx.moveTo(lastToFirst.x, lastToFirst.y);
+  for (let i = 0; i < n; i++) {
+    const current = points[i];
+    const next = points[(i + 1) % n];
+    const afterCorner = along(current, next, CORNER_ROUND_FACTOR);
+    ctx.quadraticCurveTo(current.x, current.y, afterCorner.x, afterCorner.y);
+    const beforeNextCorner = along(current, next, 1 - CORNER_ROUND_FACTOR);
+    ctx.lineTo(beforeNextCorner.x, beforeNextCorner.y);
+  }
+  ctx.closePath();
+}
+
 function fillPolygon(ctx, points, fillStyle) {
   if (points.length === 0) return;
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-  ctx.closePath();
+  traceSmoothPolygon(ctx, points);
   ctx.fillStyle = fillStyle;
   ctx.fill();
   ctx.restore();
@@ -247,9 +307,7 @@ function fillAndStrokePolygon(ctx, points, fillStyle, strokeStyle, lineWidth) {
   if (points.length === 0) return;
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-  ctx.closePath();
+  traceSmoothPolygon(ctx, points);
   ctx.fillStyle = fillStyle;
   ctx.fill();
   ctx.lineJoin = "round";

@@ -22,7 +22,7 @@ import {
   MIN_ISLAND_COUNT,
   MIN_ISLAND_DISTANCE,
   distance,
-  getPolygonBoundingRadius,
+  getLandBoundingRadius,
 } from "./rules.js";
 
 // ---------------------------------------------------------------------------
@@ -71,10 +71,11 @@ function shuffle(rng, array) {
 
 /**
  * Bounding-circle radius (map-relative units) an island instance occupies,
- * used for cheap distance-based overlap checks during placement.
+ * used for cheap distance-based overlap checks during placement. Covers
+ * every landmass for a multi-ring island (e.g. an atoll), not just one.
  */
 function placedRadius(islandEntry, scale) {
-  return getPolygonBoundingRadius(islandEntry.landShape) * scale;
+  return getLandBoundingRadius(islandEntry.landShape) * scale;
 }
 
 /**

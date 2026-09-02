@@ -396,6 +396,43 @@ export function resolveShot(origin, direction, maxDistance, mountainWorldShapes,
 }
 
 // ---------------------------------------------------------------------------
+// landShape rings (single-landmass vs. multi-landmass islands)
+// ---------------------------------------------------------------------------
+
+/**
+ * Most islands describe their land as ONE polygon: `landShape` is a flat
+ * array of [x, y] points, same as always. An island can also be several
+ * separate landmasses with open, sailable water between them (e.g. an
+ * atoll) - for those, `landShape` is instead a list of such polygons, one
+ * per landmass. This tells the two forms apart and always returns a list
+ * of >=1 rings, so every consumer (collision, bounding radius, rendering)
+ * can treat both forms the same way instead of special-casing atolls.
+ * @param {Array<[number,number]>|Array<Array<[number,number]>>} landShape
+ * @returns {Array<Array<[number,number]>>}
+ */
+export function landShapeRings(landShape) {
+  if (!landShape || landShape.length === 0) return [];
+  // A single ring's first element is a point: [x, y] (two numbers). A
+  // multi-ring landShape's first element is itself a ring, so its own
+  // first element is an array rather than a number.
+  const isMultiRing = Array.isArray(landShape[0][0]);
+  return isMultiRing ? landShape : [landShape];
+}
+
+/**
+ * Bounding-circle radius (local units, still needs multiplying by `scale`)
+ * of an island's full landShape, covering every ring for a multi-landmass
+ * island - see getPolygonBoundingRadius for the single-ring math this
+ * builds on. Used by the map generator for placement/overlap spacing.
+ * @param {Array<[number,number]>|Array<Array<[number,number]>>} landShape
+ * @returns {number}
+ */
+export function getLandBoundingRadius(landShape) {
+  const rings = landShapeRings(landShape);
+  return rings.reduce((max, ring) => Math.max(max, getPolygonBoundingRadius(ring)), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Island shape transforms (local 0-1 space -> map-relative space)
 // ---------------------------------------------------------------------------
 
@@ -428,13 +465,23 @@ export function transformIslandPolygon(polygon, placement) {
 /**
  * Transform every polygon of an island library entry (land + mountains) by
  * a placement, producing map-relative shapes ready for collision tests.
+ * `landShape` on the result mirrors whatever shape the entry's own
+ * landShape had (see landShapeRings): a plain single-ring island still
+ * comes back as a flat array of points, same as before this function
+ * learned about multi-landmass islands; only a genuine multi-ring entry
+ * (e.g. an atoll) comes back as a list of rings. Callers that need to
+ * handle both uniformly should run the result back through
+ * landShapeRings() rather than assume either shape.
  * @param {import("./gameState.js").IslandLibraryEntry} islandEntry
  * @param {{x:number,y:number,scale:number,rotation:number}} placement
- * @returns {{landShape: Array<[number,number]>, mountainShapes: Array<Array<[number,number]>>}}
+ * @returns {{landShape: Array<[number,number]>|Array<Array<[number,number]>>, mountainShapes: Array<Array<[number,number]>>}}
  */
 export function getIslandWorldShapes(islandEntry, placement) {
+  const worldRings = landShapeRings(islandEntry.landShape).map((ring) =>
+    transformIslandPolygon(ring, placement)
+  );
   return {
-    landShape: transformIslandPolygon(islandEntry.landShape, placement),
+    landShape: worldRings.length === 1 ? worldRings[0] : worldRings,
     mountainShapes: (islandEntry.mountainShapes || []).map((shape) =>
       transformIslandPolygon(shape, placement)
     ),
@@ -562,7 +609,9 @@ export function isValidShipPlacementPath(path, islandWorldShapes, existingShips)
     const segmentStart = [path[i - 1].x, path[i - 1].y];
     const segmentEnd = [path[i].x, path[i].y];
     for (const island of islandWorldShapes) {
-      if (linePolygonIntersects(segmentStart, segmentEnd, island.landShape)) return false;
+      for (const ring of landShapeRings(island.landShape)) {
+        if (linePolygonIntersects(segmentStart, segmentEnd, ring)) return false;
+      }
     }
   }
 
