@@ -112,7 +112,7 @@ export const SWIPE_TIME_LIMIT_MS = 1500;
 
 /** Scale factor range applied to island local coordinates when placed on a map. */
 export const ISLAND_SCALE_MIN = 0.151;
-export const ISLAND_SCALE_MAX = 0.6;
+export const ISLAND_SCALE_MAX = 0.4;
 
 /** Fewest islands a generated map will place, not counting the two base islands. */
 export const MIN_ISLAND_COUNT = 6;

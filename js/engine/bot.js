@@ -9,12 +9,34 @@
 // js/input.js uses for a human, so every existing animation/sound just works
 // unchanged for a bot's turn too.
 //
-// One decision pipeline, three difficulty presets (BOT_DIFFICULTY below) -
-// difficulty is only ever a handful of numbers (how far the bot will
-// attempt a shot, how much its aim/distance judgement wavers, how strongly
-// it hugs islands for cover, how often it shoots vs. expands, and whether it
-// spends the extra cost of a one-ply lookahead) rather than three separate
-// hand-written strategies to maintain.
+// Every decision is driven by hitProbability() (below) - an estimated 0-1
+// chance a given shot actually sinks its target - rather than a hard-coded
+// range cutoff. Difficulty (BOT_DIFFICULTY) now only ever changes two
+// numbers, how wide the aim/distance error is, plus a pacing delay; every
+// other difference in behavior falls out of that same probability naturally
+// (a worse bot's own cone is wider, so its own shots clear the priority
+// thresholds below only at closer range - it never needs a separate range
+// cutoff to "feel" worse).
+//
+// Decision order for one turn (see decideBotMove), highest priority first:
+//   P0  DEFENSE   - any enemy ship likely enough (>20%) to hit OUR base is
+//                   shot at if possible, or else placement tries to open a
+//                   shot on it - this beats every other consideration.
+//   P1  FREE KILL - any shot at all this good (>80%) is taken before
+//                   anything else, once P0 is clear.
+//   P2  BASE SNIPE - the enemy base specifically, once its own (lower, 30%)
+//                    bar is cleared.
+//   P3  THREAT RESPONSE - an ordinary shot, weighted toward whichever enemy
+//                          ship most threatens our own base (closer = more
+//                          urgent), as long as it clears a basic
+//                          worthwhile-odds floor.
+//   P4  PLACE - advance toward the enemy base if a spot exists where the new
+//               ship would be under 40% likely to be hit; otherwise spread
+//               out for cover (behind mountains, away from the bot's own
+//               other ships) instead.
+// A shot/placement that turns out impossible always falls back to whatever
+// still is, rather than passing - see the fallbacks at the end of
+// decideBotMove().
 
 import { getBaseShip, getShipsByOwner } from "./gameState.js";
 import {
@@ -25,12 +47,12 @@ import {
   MIN_SWIPE_SPEED,
   SHIP_HITBOX_RADIUS,
   distance,
-  getLandBoundingRadius,
   getPlacedIslandWorldShapes,
   isValidShipPlacementPath,
   landShapeRings,
   pointInPolygon,
   resolveShot,
+  shipHitRadius,
 } from "./rules.js";
 
 // ---------------------------------------------------------------------------
@@ -39,89 +61,116 @@ import {
 
 /**
  * @typedef {Object} BotDifficultyConfig
- * @property {number} engagementRange - the bot will only attempt a shot at a
- *   target within this distance (relative units) - CLAUDE.md addendum:
- *   "worse bots only try to shoot at a closer distance to any ship".
  * @property {number} aimErrorDeg - max random angular error (degrees, +/-)
- *   added to an otherwise-perfect aim - CLAUDE.md addendum: "randomness in
- *   shot accuracy is higher for the worse bots".
+ *   the bot's own shots wander by - see hitProbability().
  * @property {number} distanceErrorFactor - max random relative error (+/-)
- *   applied to the judged shot distance, same addendum as aimErrorDeg.
- * @property {number} islandHugBias - 0-1, how strongly ship placement
- *   prefers water close to land (mountains block enemy shots, so hugging
- *   them is a real tactical benefit, not just cosmetic).
- * @property {number} aggressiveness - 0-1 chance the bot chooses to shoot
- *   over placing a ship when no line-up on the enemy base is available and
- *   at least one ordinary target is in range.
+ *   in the bot's own judged shot distance - see hitProbability().
  * @property {number} thinkMs - artificial delay before the bot acts, so its
  *   turn reads as "thinking" rather than instant.
- * @property {number} baseSnipeMaxDistance - hard-only cap: even within
- *   engagementRange, the bot won't line up a shot on the enemy BASE ship
- *   specifically if it's farther than this (CLAUDE.md addendum: "the hard
- *   bot doesn't try to hit the homebase [...] if it's too far (more than
- *   half of the screen) away"). Infinity for difficulties that don't
- *   specifically hunt the base at all (their normal engagementRange already
- *   keeps them close).
- * @property {number} baseTargetBonus - extra utility score for a candidate
- *   shot that targets the enemy base, on top of a normal target.
- * @property {number} frontierBonusWeight - extra utility for a candidate
- *   shot that clears a path from the bot's own frontier toward the enemy's
- *   territory (CLAUDE.md addendum: "the hard bot tries to strategically hit
- *   enemy boats to clear a way for him to move into enemy territory"). 0
- *   disables this term entirely (easy/medium never consider it).
- * @property {boolean} lookahead - whether decideShot() also scores each
- *   candidate by a shallow one-ply lookahead (see evaluateShotOutcome).
  */
 
 /** @type {Record<"easy"|"medium"|"hard", BotDifficultyConfig>} */
 export const BOT_DIFFICULTY = {
-  easy: {
-    engagementRange: 0.3,
-    aimErrorDeg: 25,
-    distanceErrorFactor: 0.35,
-    islandHugBias: 0.1,
-    aggressiveness: 0.4,
-    thinkMs: 1400,
-    baseSnipeMaxDistance: Infinity,
-    baseTargetBonus: 0,
-    frontierBonusWeight: 0,
-    lookahead: false,
-  },
-  medium: {
-    engagementRange: 0.5,
-    aimErrorDeg: 12,
-    distanceErrorFactor: 0.15,
-    islandHugBias: 0.4,
-    aggressiveness: 0.65,
-    thinkMs: 900,
-    baseSnipeMaxDistance: Infinity,
-    baseTargetBonus: 20,
-    frontierBonusWeight: 0,
-    lookahead: false,
-  },
-  hard: {
-    engagementRange: MAX_SHOT_DISTANCE,
-    aimErrorDeg: 4,
-    distanceErrorFactor: 0.05,
-    islandHugBias: 0.8,
-    aggressiveness: 0.9,
-    thinkMs: 500,
-    baseSnipeMaxDistance: 0.5, // "more than half of the screen" - the play field is 0-1, so half is 0.5
-    baseTargetBonus: 100,
-    frontierBonusWeight: 60,
-    lookahead: true,
-  },
+  easy: { aimErrorDeg: 25, distanceErrorFactor: 0.35, thinkMs: 1400 },
+  medium: { aimErrorDeg: 12, distanceErrorFactor: 0.15, thinkMs: 900 },
+  hard: { aimErrorDeg: 4, distanceErrorFactor: 0.05, thinkMs: 500 },
 };
+
+// ---------------------------------------------------------------------------
+// Shared thresholds (same for every difficulty - only the accuracy that
+// feeds hitProbability() differs; these numbers are the strategy itself)
+// ---------------------------------------------------------------------------
+
+/** "within a 50% of screen radius" - every threat/target/placement-risk calc below is scoped to this. */
+export const CONSIDERATION_RADIUS = 0.5;
+
+/** Generic assumed enemy accuracy for defensive/threat modeling - "the margin of error while aiming should be +-20%" split across both of hitProbability()'s error axes. */
+export const ENEMY_AIM_ERROR_DEG = 20;
+export const ENEMY_DISTANCE_ERROR_FACTOR = 0.2;
+
+/** An enemy ship this likely to hit OUR base is the single highest priority, full stop. */
+export const CRITICAL_BASE_THREAT_PROB = 0.2;
+/** Any shot at all this good is taken before anything else (once P0 is clear). */
+export const OPPORTUNISTIC_SHOT_PROB = 0.8;
+/** The enemy base is only worth lining up above this. */
+export const BASE_SNIPE_PROB = 0.3;
+/**
+ * Floor below which a routine (non-critical, non-opportunistic) shot isn't
+ * worth spending the turn on - not given directly in the brief; chosen to
+ * sit between BASE_SNIPE_PROB and a coin flip so P3 still means something.
+ */
+export const WORTHWHILE_SHOT_PROB = 0.35;
+/** A new ship placed somewhere this likely (or less) to be hit next turn counts as a "safe" step forward. */
+export const SAFE_ADVANCE_MAX_THREAT = 0.4;
+/** Ships this close together (beyond the placement collision radius) count as "stacked". */
+const MIN_SHIP_SPACING = 0.05;
+
+const NORMAL_SHIP_HIT_RADIUS = shipHitRadius({ isBase: false });
+
+// ---------------------------------------------------------------------------
+// The formula
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimated probability [0,1] that a shot fired from `origin` straight at a
+ * point of hitbox radius `targetRadius` sitting `distance(origin,targetPos)`
+ * away actually sinks it, given a shooter whose aim direction wanders by up
+ * to +-angleErrorDeg and whose judged distance is off by up to
+ * +-distanceErrorFactor (both uniform - see js/engine/actions.js's fireShot,
+ * which this mirrors: swipe angle -> direction, swipe speed -> distance).
+ * 0 whenever anything - a mountain, or any other ship, own or enemy - sits
+ * closer along the straight line, since that's exactly what the real
+ * js/engine/rules.js resolveShot() would hit instead.
+ *
+ * Modeled as two independent factors:
+ *   - P(angle): the shot's DIRECTION must land within the half-angle the
+ *     target's hitbox subtends from `origin` (asin(radius/distance)) for the
+ *     line to pass through it at all. Angle error is uniform, so
+ *     P = min(1, tolerance / angleErrorDeg).
+ *   - P(distance): a real shot only travels as far as the swipe's judged
+ *     distance - overshoot doesn't matter (the ray just keeps going through
+ *     the target's position and still crosses it), only undershoot does. So
+ *     P = min(1, (distanceErrorFactor + radius/distance) / (2 * distanceErrorFactor)).
+ * The two are multiplied together as an independence approximation - not an
+ * exact joint distribution, but a close, cheap, tunable stand-in, good
+ * enough to gate/rank candidate shots against the fixed thresholds above.
+ * @param {{x:number,y:number}} origin
+ * @param {{x:number,y:number}} targetPos
+ * @param {number} targetRadius - shipHitRadius() of the target, or
+ *   NORMAL_SHIP_HIT_RADIUS for a hypothetical (not-yet-placed) point
+ * @param {number} angleErrorDeg
+ * @param {number} distanceErrorFactor
+ * @param {Array<Array<[number,number]>>} mountainShapes - world-space, see getPlacedIslandWorldShapes
+ * @param {import("./gameState.js").Ship[]} blockingShips - every ship that
+ *   could block the line, excluding `origin` itself and, if it's a real
+ *   ship, `targetPos`'s own ship
+ * @returns {number}
+ */
+export function hitProbability(origin, targetPos, targetRadius, angleErrorDeg, distanceErrorFactor, mountainShapes, blockingShips) {
+  const d = distance(origin, targetPos);
+  if (d < 1e-9) return 0;
+
+  const direction = [(targetPos.x - origin.x) / d, (targetPos.y - origin.y) / d];
+  const { endpoint } = resolveShot([origin.x, origin.y], direction, MAX_SHOT_DISTANCE, mountainShapes, blockingShips);
+  const reachDistance = distance(origin, { x: endpoint[0], y: endpoint[1] });
+  if (reachDistance < d - targetRadius - 1e-6) return 0; // a mountain or a closer ship stops the shot before it gets here
+
+  const angleToleranceDeg = (Math.asin(clamp(targetRadius / d, 0, 1)) * 180) / Math.PI;
+  const pAngle = clamp(angleToleranceDeg / angleErrorDeg, 0, 1);
+
+  const distanceToleranceFraction = targetRadius / d;
+  const pDistance = clamp((distanceErrorFactor + distanceToleranceFraction) / (2 * distanceErrorFactor), 0, 1);
+
+  return pAngle * pDistance;
+}
 
 // ---------------------------------------------------------------------------
 // Top-level entry point
 // ---------------------------------------------------------------------------
 
 /**
- * Decide the bot's whole move for this turn: either a shot to fire or a
- * placement path to walk. This is the only function js/botController.js
- * needs to call - it already folds in the shoot-vs-place choice and the
- * fallback when one or the other turns out to be impossible.
+ * Decide the bot's whole move for this turn - see the priority order (P0-P4)
+ * documented at the top of this file.
  * @param {import("./gameState.js").GameState} state
  * @param {1|2} owner - the bot's own player number
  * @param {"easy"|"medium"|"hard"} difficultyKey
@@ -133,40 +182,60 @@ export const BOT_DIFFICULTY = {
  */
 export function decideBotMove(state, owner, difficultyKey) {
   const difficulty = BOT_DIFFICULTY[difficultyKey];
-  const action = decideAction(state, owner, difficulty);
+  const shotCandidates = gatherOwnShotCandidates(state, owner, difficulty);
+  const baseThreats = assessBaseThreats(state, owner);
+  const criticalThreats = baseThreats.filter((t) => t.pHitMyBase > CRITICAL_BASE_THREAT_PROB);
 
-  if (action === "shoot") {
-    const shot = decideShot(state, owner, difficulty);
-    if (shot) return { type: "shoot", ...shot };
+  // P0 - defense: an enemy ship likely enough to hit OUR base outranks everything else.
+  if (criticalThreats.length > 0) {
+    const shotAtThreat = bestShotAgainst(shotCandidates, criticalThreats.map((t) => t.enemyShip.id));
+    if (shotAtThreat) return toShootMove(shotAtThreat, difficulty);
+
+    // Can't hit it yet - placement tries to open a shot on the worst one instead of advancing/spreading normally.
+    const path = decidePlacement(state, owner, difficulty, { priorityTarget: criticalThreats[0].enemyShip });
+    if (path) return { type: "place", path };
+
+    const fallback = bestShotAgainst(shotCandidates);
+    if (fallback) return toShootMove(fallback, difficulty);
+    return null;
   }
 
+  // P1 - any shot at all this good is free money, take it before anything else.
+  const easyKill = bestShotAgainst(shotCandidates.filter((c) => c.pHit > OPPORTUNISTIC_SHOT_PROB));
+  if (easyKill) return toShootMove(easyKill, difficulty);
+
+  // P2 - a lined-up base shot, once it clears its own (lower) bar.
+  const baseCandidate = shotCandidates.find((c) => c.target.isBase);
+  if (baseCandidate && baseCandidate.pHit > BASE_SNIPE_PROB) return toShootMove(baseCandidate, difficulty);
+
+  // P3 - an ordinary shot, weighted toward whichever enemy ship is the bigger threat to our base (closer = more
+  // urgent), as long as it clears a basic worthwhile-odds floor.
+  const threatByShipId = new Map(baseThreats.map((t) => [t.enemyShip.id, t.pHitMyBase]));
+  const bestThreatWeighted = shotCandidates
+    .filter((c) => c.pHit > WORTHWHILE_SHOT_PROB)
+    .map((c) => ({ ...c, score: c.pHit + (threatByShipId.get(c.target.id) || 0) }))
+    .sort((a, b) => b.score - a.score)[0];
+  if (bestThreatWeighted) return toShootMove(bestThreatWeighted, difficulty);
+
+  // P4 - nothing worth shooting: place instead (advance if it's safe, spread out for cover otherwise).
   const path = decidePlacement(state, owner, difficulty);
   if (path) return { type: "place", path };
 
-  // Placement wasn't possible (e.g. genuinely boxed in) - fall back to any
-  // legal shot even if the earlier choice/roll said "place".
-  const fallbackShot = decideShot(state, owner, difficulty);
-  if (fallbackShot) return { type: "shoot", ...fallbackShot };
-
+  // Placement wasn't possible either - take the best (even mediocre) shot rather than pass.
+  const anyShot = bestShotAgainst(shotCandidates);
+  if (anyShot) return toShootMove(anyShot, difficulty);
   return null;
 }
 
-/**
- * Choose "shoot" or "place" for this turn.
- * @param {import("./gameState.js").GameState} state
- * @param {1|2} owner
- * @param {BotDifficultyConfig} difficulty
- * @returns {"shoot"|"place"}
- */
-function decideAction(state, owner, difficulty) {
-  const candidates = gatherShotCandidates(state, owner, difficulty);
-  if (candidates.length === 0) return "place";
+/** Highest-pHit candidate, optionally restricted to a set of target ship ids. */
+function bestShotAgainst(candidates, targetIds = null) {
+  const pool = targetIds ? candidates.filter((c) => targetIds.includes(c.target.id)) : [...candidates];
+  return pool.sort((a, b) => b.pHit - a.pHit)[0] || null;
+}
 
-  // A lined-up, in-range shot at the enemy base is always worth taking over
-  // placing another ship, at every difficulty - it's the win condition.
-  if (candidates.some((c) => c.target.isBase)) return "shoot";
-
-  return Math.random() < difficulty.aggressiveness ? "shoot" : "place";
+function toShootMove(candidate, difficulty) {
+  const { direction, speed } = aimAt(candidate.originShip, candidate.target, candidate.distance, difficulty);
+  return { type: "shoot", originShip: candidate.originShip, direction, speed };
 }
 
 // ---------------------------------------------------------------------------
@@ -174,155 +243,68 @@ function decideAction(state, owner, difficulty) {
 // ---------------------------------------------------------------------------
 
 /**
- * Find every (own ship, enemy ship) pair the bot could legally shoot right
- * now: within this difficulty's engagement range (and, for the enemy base,
- * within baseSnipeMaxDistance too) and with nothing else - mountain or any
- * other ship, own or enemy - in the way. Reuses rules.js's real resolveShot()
- * for the line-of-sight check, so this can never propose a shot the actual
- * game logic wouldn't also resolve as hitting that exact target (before aim
- * noise is layered on top in aimAt()).
- * @param {import("./gameState.js").GameState} state
- * @param {1|2} owner
- * @param {BotDifficultyConfig} difficulty
- * @returns {Array<{originShip:import("./gameState.js").Ship, target:import("./gameState.js").Ship, direction:[number,number], distance:number}>}
+ * Every (own ship, enemy ship) pair within CONSIDERATION_RADIUS with a
+ * nonzero hitProbability(), using the bot's own difficulty accuracy.
+ * @returns {Array<{originShip:import("./gameState.js").Ship, target:import("./gameState.js").Ship, pHit:number, distance:number}>}
  */
-export function gatherShotCandidates(state, owner, difficulty) {
+function gatherOwnShotCandidates(state, owner, difficulty) {
   const ownShips = getShipsByOwner(state, owner);
   const enemyOwner = owner === 1 ? 2 : 1;
   const enemyShips = getShipsByOwner(state, enemyOwner);
   if (ownShips.length === 0 || enemyShips.length === 0) return [];
 
-  const mountainShapes = getPlacedIslandWorldShapes(state.islands, state.map).flatMap(
-    (island) => island.mountainShapes
-  );
+  const mountainShapes = getPlacedIslandWorldShapes(state.islands, state.map).flatMap((island) => island.mountainShapes);
 
   const candidates = [];
   for (const originShip of ownShips) {
     for (const target of enemyShips) {
-      const dist = distance(originShip, target);
-      const maxRange = target.isBase
-        ? Math.min(difficulty.engagementRange, difficulty.baseSnipeMaxDistance)
-        : difficulty.engagementRange;
-      if (dist > maxRange || dist < MIN_SHOT_DISTANCE) continue;
+      const d = distance(originShip, target);
+      if (d > CONSIDERATION_RADIUS) continue;
 
-      const direction = [(target.x - originShip.x) / dist, (target.y - originShip.y) / dist];
-      const otherShips = state.ships.filter((ship) => ship.id !== originShip.id);
-      // Probe the FULL shot range, not just `dist`: resolveShot returns
-      // whatever it hits first, so this doubles as the "nothing else in the
-      // way" check - a nearer ship or mountain along the same line would
-      // come back as the hit instead of `target`.
-      const { hitShip } = resolveShot([originShip.x, originShip.y], direction, MAX_SHOT_DISTANCE, mountainShapes, otherShips);
-      if (!hitShip || hitShip.id !== target.id) continue;
+      const blockingShips = state.ships.filter((ship) => ship.id !== originShip.id && ship.id !== target.id);
+      const pHit = hitProbability(originShip, target, shipHitRadius(target), difficulty.aimErrorDeg, difficulty.distanceErrorFactor, mountainShapes, blockingShips);
+      if (pHit <= 0) continue;
 
-      candidates.push({ originShip, target, direction, distance: dist });
+      candidates.push({ originShip, target, pHit, distance: d });
     }
   }
   return candidates;
 }
 
 /**
- * Score one shot candidate: a lined-up base shot dominates (baseTargetBonus),
- * a target that sits on the bot's advance corridor toward the enemy is worth
- * extra (frontierClearingBonus, hard only), and closer shots are slightly
- * preferred since they're both easier to have judged correctly and easier
- * to aim well post-noise.
+ * Every enemy ship within CONSIDERATION_RADIUS of our own base, with its
+ * estimated chance of hitting that base (generic ENEMY_AIM_ERROR_DEG/
+ * ENEMY_DISTANCE_ERROR_FACTOR accuracy - we don't know the human's actual
+ * skill), sorted most-threatening first.
+ * @returns {Array<{enemyShip:import("./gameState.js").Ship, distance:number, pHitMyBase:number}>}
  */
-function scoreShotCandidate(state, owner, candidate, difficulty) {
-  let score = 1;
-  if (candidate.target.isBase) score += difficulty.baseTargetBonus;
-  score += frontierClearingBonus(state, owner, candidate, difficulty);
-  score += (1 - candidate.distance / MAX_SHOT_DISTANCE) * 5;
-  return score;
-}
-
-/**
- * Hard-mode-only bonus (CLAUDE.md addendum: "the hard bot tries to
- * strategically hit enemy boats to clear a way for him to move into enemy
- * territory"): projects the candidate target onto the corridor from the
- * bot's own frontmost ship (closest to the enemy base) to that base, and
- * rewards targets that sit close to, and between the two ends of, that
- * corridor - i.e. ships that are plausibly in the bot's way. Cheap
- * (O(1) per candidate) corridor-alignment heuristic rather than an actual
- * pathfind-before/after comparison, which would cost one grid search per
- * candidate for a benefit only really visible in extended playtesting.
- */
-function frontierClearingBonus(state, owner, candidate, difficulty) {
-  if (difficulty.frontierBonusWeight <= 0) return 0;
-
+function assessBaseThreats(state, owner) {
+  const myBase = getBaseShip(state, owner);
+  if (!myBase) return [];
   const enemyOwner = owner === 1 ? 2 : 1;
-  const enemyBase = getBaseShip(state, enemyOwner);
-  if (!enemyBase) return 0;
+  const enemyShips = getShipsByOwner(state, enemyOwner);
+  const mountainShapes = getPlacedIslandWorldShapes(state.islands, state.map).flatMap((island) => island.mountainShapes);
 
-  const ownShips = getShipsByOwner(state, owner);
-  const front = ownShips.reduce(
-    (closest, ship) => (distance(ship, enemyBase) < distance(closest, enemyBase) ? ship : closest),
-    ownShips[0]
-  );
-
-  const corridorLenSq = squaredDistance(front, enemyBase);
-  if (corridorLenSq < 1e-9) return 0;
-
-  const t = projectPointOntoSegmentT(candidate.target, front, enemyBase);
-  if (t <= 0 || t >= 1) return 0; // not between the bot's frontier and the enemy base at all
-
-  const perpDist = perpendicularDistanceToSegment(candidate.target, front, enemyBase);
-  const corridorLen = Math.sqrt(corridorLenSq);
-  const proximity = Math.max(0, 1 - perpDist / (corridorLen * 0.3)); // falls off past ~30% of the corridor's own length
-  return difficulty.frontierBonusWeight * proximity;
-}
-
-/**
- * Hard-mode-only shallow lookahead: scores the hypothetical board state
- * right after taking `candidate`'s shot, using the same "ships alive / enemy
- * base alive" signals js/engine/scoring.js's computeScore() rewards (skipping
- * its time-based pace bonus, which isn't meaningful for a one-ply
- * hypothetical). Lets the hard bot prefer a shot that meaningfully advances
- * the match over one that merely happens to be available.
- */
-function evaluateShotOutcome(state, owner, candidate) {
-  const enemyOwner = owner === 1 ? 2 : 1;
-  const enemyAliveAfter = getShipsByOwner(state, enemyOwner).length - 1;
-  const enemyBaseAliveAfter = candidate.target.isBase ? false : !!getBaseShip(state, enemyOwner);
-
-  let value = -enemyAliveAfter * 10; // fewer surviving enemy ships is better for the bot
-  if (!enemyBaseAliveAfter) value += 1000; // winning outright dominates every other consideration
-  return value;
-}
-
-/**
- * Pick the bot's best available shot and turn it into a direction+speed
- * fireShot() (js/engine/actions.js) can use directly, with difficulty-scaled
- * aim/distance noise layered on top of the otherwise-perfect line to the
- * chosen target.
- * @param {import("./gameState.js").GameState} state
- * @param {1|2} owner
- * @param {BotDifficultyConfig} difficulty
- * @returns {{originShip:import("./gameState.js").Ship, direction:[number,number], speed:number}|null}
- */
-function decideShot(state, owner, difficulty) {
-  const candidates = gatherShotCandidates(state, owner, difficulty);
-  if (candidates.length === 0) return null;
-
-  let scored = candidates.map((c) => ({ ...c, score: scoreShotCandidate(state, owner, c, difficulty) }));
-  if (difficulty.lookahead) {
-    scored = scored.map((c) => ({ ...c, score: c.score + evaluateShotOutcome(state, owner, c) }));
-  }
-  scored.sort((a, b) => b.score - a.score);
-  const best = scored[0];
-
-  const { direction, speed } = aimAt(best.originShip, best.distance, best.direction, difficulty);
-  return { originShip: best.originShip, direction, speed };
+  return enemyShips
+    .map((enemyShip) => {
+      const d = distance(enemyShip, myBase);
+      if (d > CONSIDERATION_RADIUS) return null;
+      const blockingShips = state.ships.filter((ship) => ship.id !== enemyShip.id && ship.id !== myBase.id);
+      const pHitMyBase = hitProbability(enemyShip, myBase, shipHitRadius(myBase), ENEMY_AIM_ERROR_DEG, ENEMY_DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+      return { enemyShip, distance: d, pHitMyBase };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.pHitMyBase - a.pHitMyBase);
 }
 
 /**
  * Turn a true (noise-free) direction+distance to a target into a swipe
- * direction+speed with difficulty-scaled error mixed in (CLAUDE.md addendum:
- * "randomness in shot accuracy is higher for the worse bots"). `speed` is
- * the exact inverse of rules.js's swipeSpeedToDistance(), so a noise-free
- * call round-trips to the true distance.
+ * direction+speed with difficulty-scaled error mixed in. `speed` is the
+ * exact inverse of rules.js's swipeSpeedToDistance(), so a noise-free call
+ * round-trips to the true distance.
  */
-function aimAt(originShip, trueDistance, trueDirection, difficulty) {
-  const trueAngle = Math.atan2(trueDirection[1], trueDirection[0]);
+function aimAt(originShip, target, trueDistance, difficulty) {
+  const trueAngle = Math.atan2(target.y - originShip.y, target.x - originShip.x);
   const angleNoise = degToRad(difficulty.aimErrorDeg) * (Math.random() * 2 - 1);
   const angle = trueAngle + angleNoise;
   const direction = [Math.cos(angle), Math.sin(angle)];
@@ -344,32 +326,35 @@ function distanceToSwipeSpeed(desiredDistance) {
 // Placement
 // ---------------------------------------------------------------------------
 
-// How many random open-water candidate endpoints to sample before scoring
-// and trying to build a real path to the best of them.
 const PLACEMENT_CANDIDATE_COUNT = 30;
-// Of those, how many (best-scored first) actually get a pathfinding attempt -
-// most maps resolve on the first or second try; this is just a safety net
-// for when the top-scored spot turns out to be unreachable within budget.
 const PLACEMENT_CANDIDATES_TO_TRY = 8;
-// Resolution (cells per axis) of the coarse water/land grid used to route a
-// path around an island's corner when the straight line to a candidate
-// endpoint crosses land - see findWaterPath.
 const PATH_GRID_RESOLUTION = 36;
 
+// Placement scoring weights (see scorePlacementCandidate) - tuned so a safe
+// advance always beats a purely defensive spot, and a priority-target shot
+// opportunity beats everything.
+const PRIORITY_TARGET_SCORE_SCALE = 1000;
+const ADVANCE_BASE_SCORE = 100;
+const ADVANCE_PROGRESS_WEIGHT = 20;
+const COVER_WEIGHT = 10; // per enemy ship this spot is hidden from
+const EXPOSURE_WEIGHT = 50; // scaled by the single worst threat's probability
+const STACKING_PENALTY_WEIGHT = 40;
+const SCORE_JITTER = 2; // small random tie-breaker so the bot isn't perfectly deterministic turn to turn
+
 /**
- * Choose where to extend the bot's fleet this turn and build a full,
- * legal freehand path to it (CLAUDE.md Action A). Candidate endpoints are
- * scored by island-hugging (difficulty.islandHugBias - mountains block
- * enemy shots, so hugging one is real cover, not just flavor) and by how
- * much closer they'd bring the bot to the human's current fleet (the
- * "reactive to the moves of the single player" requirement) before a path is
- * actually built to the best-scoring one.
+ * Choose where to extend the bot's fleet this turn and build a full, legal
+ * freehand path to it (CLAUDE.md Action A). See scorePlacementCandidate for
+ * how candidate endpoints are scored: advance toward the enemy base when
+ * it's safe (CLAUDE.md addendum), otherwise spread out for mountain cover,
+ * or - if `priorityTarget` is set (P0 in decideBotMove) - open a shot on it.
  * @param {import("./gameState.js").GameState} state
  * @param {1|2} owner
  * @param {BotDifficultyConfig} difficulty
+ * @param {{priorityTarget?: import("./gameState.js").Ship}} [options]
  * @returns {Array<{x:number,y:number}>|null} null if no legal path could be built at all
  */
-function decidePlacement(state, owner, difficulty) {
+function decidePlacement(state, owner, difficulty, options = {}) {
+  const { priorityTarget = null } = options;
   const ownShips = getShipsByOwner(state, owner);
   if (ownShips.length === 0) return null;
 
@@ -377,8 +362,17 @@ function decidePlacement(state, owner, difficulty) {
   const raw = sampleCandidateEndpoints(state, ownShips, islandWorldShapes, PLACEMENT_CANDIDATE_COUNT);
   if (raw.length === 0) return null;
 
+  const enemyOwner = owner === 1 ? 2 : 1;
+  const context = {
+    enemyShips: getShipsByOwner(state, enemyOwner),
+    enemyBase: getBaseShip(state, enemyOwner),
+    mountainShapes: islandWorldShapes.flatMap((island) => island.mountainShapes),
+    priorityTarget,
+    ownShips,
+  };
+
   const scored = raw
-    .map((c) => ({ ...c, score: scorePlacementCandidate(state, owner, c, difficulty) }))
+    .map((c) => ({ ...c, score: scorePlacementCandidate(state, difficulty, c, context) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, PLACEMENT_CANDIDATES_TO_TRY);
 
@@ -417,35 +411,72 @@ function isOpenWater(point, state, islandWorldShapes) {
   return true;
 }
 
-function scorePlacementCandidate(state, owner, candidate, difficulty) {
-  let score = 0;
+/**
+ * Score one candidate placement point (higher is better):
+ *   - `priorityTarget` set (P0, can't currently hit a critical base threat):
+ *     dominated entirely by the chance a ship placed here would get a shot
+ *     on it.
+ *   - otherwise: if the spot is "safe" (CLAUDE.md addendum's <40% chance any
+ *     nearby enemy could hit a ship placed here), reward progress toward the
+ *     enemy base - advancing always beats a purely defensive spot. If it's
+ *     not safe, fall back to minimizing how many enemy ships could hit it at
+ *     all (mountain cover, not "near land" - CLAUDE.md addendum) and how bad
+ *     the single worst threat is.
+ * Every branch is further penalized for landing right next to one of the
+ * bot's own other ships (CLAUDE.md addendum: don't stack, advance or spread).
+ */
+function scorePlacementCandidate(state, difficulty, candidate, context) {
+  const { enemyShips, enemyBase, mountainShapes, priorityTarget, ownShips } = context;
+  const point = candidate.point;
+  const spacingPenalty = stackingPenalty(point, ownShips);
 
-  const nearestLandDist = nearestDistanceToLand(candidate.point, state.islands, state.map);
-  score += difficulty.islandHugBias * Math.max(0, 1 - nearestLandDist / 0.15) * 10;
-
-  const enemyOwner = owner === 1 ? 2 : 1;
-  const enemyShips = getShipsByOwner(state, enemyOwner);
-  if (enemyShips.length > 0) {
-    const enemyCentroid = centroid(enemyShips);
-    const closingDistance = distance(candidate.origin, enemyCentroid) - distance(candidate.point, enemyCentroid);
-    score += Math.max(0, closingDistance) * 8; // reactive: reward closing the gap toward the human's fleet
+  if (priorityTarget) {
+    const blockingShips = state.ships.filter((ship) => ship.id !== priorityTarget.id);
+    const pHitPriority = hitProbability(point, priorityTarget, shipHitRadius(priorityTarget), difficulty.aimErrorDeg, difficulty.distanceErrorFactor, mountainShapes, blockingShips);
+    return pHitPriority * PRIORITY_TARGET_SCORE_SCALE - spacingPenalty;
   }
 
-  score += Math.random() * 2; // small jitter so the bot isn't perfectly deterministic turn to turn
-  return score;
+  const { maxThreat, exposedCount } = assessPlacementRisk(point, enemyShips, mountainShapes, state.ships);
+
+  let score;
+  if (maxThreat < SAFE_ADVANCE_MAX_THREAT) {
+    const progress = enemyBase ? distance(candidate.origin, enemyBase) - distance(point, enemyBase) : 0;
+    score = ADVANCE_BASE_SCORE + progress * ADVANCE_PROGRESS_WEIGHT;
+  } else {
+    score = -exposedCount * COVER_WEIGHT - maxThreat * EXPOSURE_WEIGHT;
+  }
+
+  return score - spacingPenalty + Math.random() * SCORE_JITTER;
 }
 
-/** Cheap bounding-circle approximation of a point's distance to the nearest island's land. */
-function nearestDistanceToLand(point, islandLibrary, map) {
-  let min = Infinity;
-  for (const placement of map?.islands || []) {
-    const entry = islandLibrary.find((island) => island.id === placement.islandId);
-    if (!entry) continue;
-    const radius = getLandBoundingRadius(entry.landShape) * placement.scale;
-    const d = distance(point, placement) - radius;
-    if (d < min) min = d;
+/**
+ * How exposed a hypothetical new ship at `point` would be right now: the
+ * single worst enemy hit chance against it (maxThreat, used for the <40%
+ * "safe to advance" check) and how many distinct enemy ships have ANY
+ * nonzero chance at all (exposedCount, used to prefer cover behind a
+ * mountain from as many of them as possible).
+ */
+function assessPlacementRisk(point, enemyShips, mountainShapes, allShips) {
+  let maxThreat = 0;
+  let exposedCount = 0;
+  for (const enemy of enemyShips) {
+    if (distance(enemy, point) > CONSIDERATION_RADIUS) continue;
+    const blockingShips = allShips.filter((ship) => ship.id !== enemy.id);
+    const p = hitProbability(enemy, point, NORMAL_SHIP_HIT_RADIUS, ENEMY_AIM_ERROR_DEG, ENEMY_DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+    if (p > 0) exposedCount++;
+    if (p > maxThreat) maxThreat = p;
   }
-  return Math.max(0, min);
+  return { maxThreat, exposedCount };
+}
+
+/** Penalty for landing a new ship too close to one of the bot's own other ships (CLAUDE.md addendum: don't stack). */
+function stackingPenalty(point, ownShips) {
+  let penalty = 0;
+  for (const ship of ownShips) {
+    const gap = distance(point, ship) - MIN_SHIP_SPACING;
+    if (gap < 0) penalty += -gap * STACKING_PENALTY_WEIGHT;
+  }
+  return penalty;
 }
 
 /**
@@ -628,8 +659,7 @@ function simplifyCollinear(points, angleEpsilon = 0.08) {
 }
 
 // ---------------------------------------------------------------------------
-// Small vector helpers (local to this file - rules.js's `distance` covers
-// the rest of what's needed elsewhere)
+// Small helpers
 // ---------------------------------------------------------------------------
 
 function degToRad(deg) {
@@ -638,30 +668,4 @@ function degToRad(deg) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function squaredDistance(a, b) {
-  return (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
-}
-
-function centroid(points) {
-  const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
-  return { x: sum.x / points.length, y: sum.y / points.length };
-}
-
-/** Parametric projection of point `p` onto line (a,b), unclamped (can be <0 or >1 - see frontierClearingBonus). */
-function projectPointOntoSegmentT(p, a, b) {
-  const abx = b.x - a.x;
-  const aby = b.y - a.y;
-  const lenSq = abx * abx + aby * aby;
-  if (lenSq < 1e-12) return 0;
-  return ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq;
-}
-
-/** Shortest distance from point `p` to segment (a,b) (clamped to the segment's own extent). */
-function perpendicularDistanceToSegment(p, a, b) {
-  const t = clamp(projectPointOntoSegmentT(p, a, b), 0, 1);
-  const cx = a.x + t * (b.x - a.x);
-  const cy = a.y + t * (b.y - a.y);
-  return Math.hypot(p.x - cx, p.y - cy);
 }
