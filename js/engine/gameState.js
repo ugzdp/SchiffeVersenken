@@ -103,6 +103,13 @@
  *   match, folded in by resumeMatch() each time a pause ends - see
  *   pauseAdjustedTime() below, which uses this to keep the match clock and
  *   score pace bonus blind to any time spent paused
+ * @property {Object<string, number>} botShotMemory - the single-player bot's
+ *   own memory of shots that missed their intended target, keyed by
+ *   "<originShipId>:<targetShipId>" -> miss count. Ships never move once
+ *   placed (see the Ship typedef above), so an (origin, target) pair is a
+ *   stable "position" the bot can learn to stop wasting shots from - see
+ *   getBotShotMissCount()/recordBotShotOutcome() below and js/engine/bot.js's
+ *   MAX_MISSES_BEFORE_AVOIDING_ORIGIN.
  */
 
 /** Turn/phase state machine values (see CLAUDE.md "Game phases"). */
@@ -135,7 +142,44 @@ export function createGameState() {
     paused: false,
     pausedAt: null,
     pausedDurationMs: 0,
+    botShotMemory: {},
   };
+}
+
+/**
+ * How many times the single-player bot has fired at `targetId` from
+ * `originId` and missed it (hit nothing, or hit some other ship instead) -
+ * see js/engine/bot.js's gatherOwnShotCandidates(), which stops proposing a
+ * pairing once this reaches MAX_MISSES_BEFORE_AVOIDING_ORIGIN. Safe to call
+ * on a state that never went through createGameState() (e.g. a hand-built
+ * test fixture) - missing botShotMemory just reads as "never tried yet".
+ * @param {GameState} state
+ * @param {string} originId
+ * @param {string} targetId
+ * @returns {number}
+ */
+export function getBotShotMissCount(state, originId, targetId) {
+  return (state.botShotMemory && state.botShotMemory[`${originId}:${targetId}`]) || 0;
+}
+
+/**
+ * Record the outcome of one of the bot's own aimed shots, for
+ * getBotShotMissCount() above. Called by js/botController.js right after
+ * js/engine/actions.js's fireShot() resolves. A hit on the intended target
+ * clears its memory entry (the ship's gone, so it no longer matters); any
+ * other outcome (a miss, or hitting some other ship) counts as one more miss
+ * against that exact origin/target pairing.
+ * @param {GameState} state
+ * @param {string} originId
+ * @param {string} targetId
+ * @param {string|null} hitShipId - the id of whatever the shot actually sank, or null on a clean miss
+ * @returns {void}
+ */
+export function recordBotShotOutcome(state, originId, targetId, hitShipId) {
+  if (!state.botShotMemory) state.botShotMemory = {};
+  const key = `${originId}:${targetId}`;
+  if (hitShipId === targetId) delete state.botShotMemory[key];
+  else state.botShotMemory[key] = (state.botShotMemory[key] || 0) + 1;
 }
 
 /**
@@ -264,6 +308,7 @@ export function resetMatch(state) {
   state.paused = false;
   state.pausedAt = null;
   state.pausedDurationMs = 0;
+  state.botShotMemory = {}; // a new match means new ship ids - stale entries can't match anything, but clear them anyway
 }
 
 /** @returns {StatCounters} a fresh, all-zero counter block for one player. */

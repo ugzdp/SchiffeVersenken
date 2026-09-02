@@ -15,7 +15,7 @@
 // cancelPendingPlacementTimer()) is all that's needed to stop a bot turn
 // cleanly.
 
-import { Phase, setPhase } from "./engine/gameState.js";
+import { Phase, recordBotShotOutcome, setPhase } from "./engine/gameState.js";
 import { beginPlacementConfirmation, commitPlacement, endTurn, fireShot, placeShip } from "./engine/actions.js";
 import { BOT_DIFFICULTY, decideBotMove } from "./engine/bot.js";
 import { PLACEMENT_CONFIRM_WINDOW_MS } from "./engine/rules.js";
@@ -143,6 +143,11 @@ export function initBotController(state, onTurnChanged) {
   function startShot(move, time) {
     playShotFired();
     const { sunkShip } = fireShot(state, move.originShip, move.direction, move.speed, time);
+    // Remember whether this shot actually landed on the ship bot.js meant to
+    // hit, so a repeated miss from the same ship at the same target can
+    // eventually be ruled out - see js/engine/bot.js's
+    // MAX_MISSES_BEFORE_AVOIDING_ORIGIN.
+    if (move.target) recordBotShotOutcome(state, move.originShip.id, move.target.id, sunkShip ? sunkShip.id : null);
     if (onTurnChanged) onTurnChanged();
 
     phase = "shotResolve";

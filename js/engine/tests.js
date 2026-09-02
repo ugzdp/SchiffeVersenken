@@ -604,7 +604,7 @@ console.log("bot.js - decideBotMove (P1: any >80% shot is taken immediately, abs
 console.log("bot.js - decideBotMove (P2: the enemy base gets its own, lower bar)");
 {
   const myBase = { id: "my-base-p2", owner: 2, x: 0.1, y: 0.1, isBase: true };
-  const enemyBase = { id: "enemy-base", owner: 1, x: 0.4, y: 0.1, isBase: true }; // 0.3 from our shooter
+  const enemyBase = { id: "enemy-base", owner: 1, x: 0.38, y: 0.1, isBase: true }; // 0.28 from our shooter - medium's own (now wider) error still clears BASE_SNIPE_PROB here
 
   const pBase = hitProbability(myBase, enemyBase, shipHitRadius(enemyBase), BOT_DIFFICULTY.medium.aimErrorDeg, BOT_DIFFICULTY.medium.distanceErrorFactor, [], []);
   assert(

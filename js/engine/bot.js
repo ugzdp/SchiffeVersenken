@@ -30,21 +30,42 @@
 //                          ship most threatens our own base (closer = more
 //                          urgent), as long as it clears a basic
 //                          worthwhile-odds floor.
-//   P4  PLACE - advance toward the enemy base if a spot exists where the new
-//               ship would be under 40% likely to be hit; failing that, it
-//               may still gamble on a merely-risky spot (see
-//               acceptsRiskyAdvance) rather than always retreating to cover -
-//               a calculated bet that the enemy misses next turn, so a
-//               follow-up move can reach real safety. Otherwise spread out
-//               for cover (behind mountains, away from the bot's own other
-//               ships) instead, still leaning toward the enemy base over one
-//               that's further back so the fleet keeps pushing forward
-//               rather than ringing the bot's own base.
+//   P4  PLACE - if a specific enemy ship stands out as the most dangerous
+//               (see mostDangerousCandidate/baseThreats) and no shot on it
+//               clears the bar above, try repositioning toward it instead of
+//               a generic advance - "relocating boats to make future shots
+//               easier". Failing that, advance toward the enemy base if a
+//               spot exists where the new ship would be under 40% likely to
+//               be hit; failing that, it may still gamble on a merely-risky
+//               spot (see acceptsRiskyAdvance) rather than always retreating
+//               to cover - a calculated bet that the enemy misses next turn,
+//               so a follow-up move can reach real safety. Otherwise spread
+//               out for cover (behind mountains, away from the bot's own
+//               other ships) instead, still leaning toward the enemy base
+//               over one that's further back so the fleet keeps pushing
+//               forward rather than ringing the bot's own base.
 // A shot/placement that turns out impossible always falls back to whatever
 // still is, rather than passing - see the fallbacks at the end of
 // decideBotMove().
+//
+// Within P0/P1, among several candidate shots that all clear their tier's
+// bar, the target itself is picked by DANGER first (how likely it already is
+// to hit our own base from where it sits - see mostDangerousCandidate()) and
+// our own odds only break ties - "not the closest boat but the one that has
+// the highest potential of becoming dangerous". P3 folds the same danger
+// number into its score instead. This is also why P4's repositioning check
+// exists: a dangerous ship we can't yet hit is worth moving toward, not
+// ignored in favor of an easier but less important target elsewhere.
+//
+// Once a shot at a given (our ship, their ship) pairing has missed
+// MAX_MISSES_BEFORE_AVOIDING_ORIGIN times, gatherOwnShotCandidates() stops
+// proposing it - see state.botShotMemory (js/engine/gameState.js). Every
+// tier above naturally "pivots" once that happens, since it's just working
+// from a shotCandidates list with that one pairing missing: another target,
+// another one of our ships, or placement (advance/defense/reposition) take
+// over on their own, with no extra logic needed here.
 
-import { getBaseShip, getShipsByOwner } from "./gameState.js";
+import { getBaseShip, getBotShotMissCount, getShipsByOwner } from "./gameState.js";
 import {
   MAX_LINE_LENGTH,
   MAX_SHOT_DISTANCE,
@@ -120,6 +141,33 @@ export const BASE_SNIPE_PROB = 0.3;
  * sit between BASE_SNIPE_PROB and a coin flip so P3 still means something.
  */
 export const WORTHWHILE_SHOT_PROB = 0.35;
+/**
+ * How much more a candidate shot's score (P3) is boosted per unit of its
+ * target's own danger (pHitMyBase) - bigger than 1 so, among ordinary
+ * shots, which enemy ship is more dangerous outweighs which one we
+ * personally have slightly better odds against.
+ */
+export const THREAT_WEIGHT_IN_SHOT_SCORE = 2.5;
+/**
+ * After this many missed shots at the same enemy ship from the same one of
+ * our ships, gatherOwnShotCandidates() stops proposing that exact pairing -
+ * "if a boat has been shot at and missed twice ... this means you are too
+ * far away [to aim well from there]". Ships never move once placed, so
+ * (origin, target) is a stable "position" to give up on - every priority
+ * tier above naturally moves on to a different target, a different one of
+ * our ships, or placement instead, since it's just working from a
+ * shotCandidates list with that one pairing missing.
+ */
+export const MAX_MISSES_BEFORE_AVOIDING_ORIGIN = 2;
+/**
+ * A P4 repositioning move toward the single most dangerous enemy ship (see
+ * mostDangerousCandidate) only replaces the generic advance/cover placement
+ * when it would land the new ship somewhere clearing at least this much
+ * next-turn hit chance on that ship - otherwise it's not worth bending the
+ * whole placement decision around a target that's still out of realistic
+ * reach.
+ */
+export const TARGETING_PLACEMENT_MIN_PROB = 0.15;
 /** A new ship placed somewhere this likely (or less) to be hit next turn counts as a "safe" step forward. */
 export const SAFE_ADVANCE_MAX_THREAT = 0.4;
 /**
@@ -201,7 +249,7 @@ export function hitProbability(origin, targetPos, targetRadius, angleErrorDeg, d
  * @param {import("./gameState.js").GameState} state
  * @param {1|2} owner - the bot's own player number
  * @param {"easy"|"medium"|"hard"} difficultyKey
- * @returns {{type:"shoot", originShip:import("./gameState.js").Ship, direction:[number,number], speed:number}
+ * @returns {{type:"shoot", originShip:import("./gameState.js").Ship, target:import("./gameState.js").Ship, direction:[number,number], speed:number}
  *          |{type:"place", path:Array<{x:number,y:number}>}
  *          |null} null only when the bot has no legal move at all (should
  *   not happen given the map generator's playability guarantee, but a
@@ -212,10 +260,14 @@ export function decideBotMove(state, owner, difficultyKey) {
   const shotCandidates = gatherOwnShotCandidates(state, owner, difficulty);
   const baseThreats = assessBaseThreats(state, owner);
   const criticalThreats = baseThreats.filter((t) => t.pHitMyBase > CRITICAL_BASE_THREAT_PROB);
+  // Every enemy ship's own "danger" number (its chance of hitting OUR base
+  // from where it sits right now) - used below to pick the more dangerous
+  // target over the merely easier one, not just to gate P0/P3.
+  const threatByShipId = new Map(baseThreats.map((t) => [t.enemyShip.id, t.pHitMyBase]));
 
   // P0 - defense: an enemy ship likely enough to hit OUR base outranks everything else.
   if (criticalThreats.length > 0) {
-    const shotAtThreat = bestShotAgainst(shotCandidates, criticalThreats.map((t) => t.enemyShip.id));
+    const shotAtThreat = mostDangerousCandidate(shotCandidates, threatByShipId, criticalThreats.map((t) => t.enemyShip.id));
     if (shotAtThreat) return toShootMove(shotAtThreat, difficulty);
 
     // Can't hit it yet - placement tries to open a shot on the worst one instead of advancing/spreading normally.
@@ -227,8 +279,9 @@ export function decideBotMove(state, owner, difficultyKey) {
     return null;
   }
 
-  // P1 - any shot at all this good is free money, take it before anything else.
-  const easyKill = bestShotAgainst(shotCandidates.filter((c) => c.pHit > OPPORTUNISTIC_SHOT_PROB));
+  // P1 - any shot at all this good is free money, take it before anything else - but among several such
+  // shots, the more dangerous target wins over the merely easier one (CLAUDE.md addendum).
+  const easyKill = mostDangerousCandidate(shotCandidates.filter((c) => c.pHit > OPPORTUNISTIC_SHOT_PROB), threatByShipId);
   if (easyKill) return toShootMove(easyKill, difficulty);
 
   // P2 - a lined-up base shot, once it clears its own (lower) bar.
@@ -236,15 +289,24 @@ export function decideBotMove(state, owner, difficultyKey) {
   if (baseCandidate && baseCandidate.pHit > BASE_SNIPE_PROB) return toShootMove(baseCandidate, difficulty);
 
   // P3 - an ordinary shot, weighted toward whichever enemy ship is the bigger threat to our base (closer = more
-  // urgent), as long as it clears a basic worthwhile-odds floor.
-  const threatByShipId = new Map(baseThreats.map((t) => [t.enemyShip.id, t.pHitMyBase]));
+  // urgent, or sitting on a lane we don't otherwise guard), as long as it clears a basic worthwhile-odds floor.
   const bestThreatWeighted = shotCandidates
     .filter((c) => c.pHit > WORTHWHILE_SHOT_PROB)
-    .map((c) => ({ ...c, score: c.pHit + (threatByShipId.get(c.target.id) || 0) }))
+    .map((c) => ({ ...c, score: c.pHit + (threatByShipId.get(c.target.id) || 0) * THREAT_WEIGHT_IN_SHOT_SCORE }))
     .sort((a, b) => b.score - a.score)[0];
   if (bestThreatWeighted) return toShootMove(bestThreatWeighted, difficulty);
 
-  // P4 - nothing worth shooting: place instead (advance if it's safe, spread out for cover otherwise).
+  // P4 - nothing worth shooting yet. If one enemy ship stands out as the most dangerous, try repositioning
+  // toward it first (CLAUDE.md addendum: "relocating boats to make future shots easier") rather than
+  // defaulting straight to a generic advance; only keep that repositioning move if it actually lands
+  // somewhere with a realistic follow-up shot, otherwise fall through to the normal advance/cover placement.
+  const mostDangerousShip = baseThreats[0] ? baseThreats[0].enemyShip : null;
+  if (mostDangerousShip) {
+    const targetingPath = decidePlacement(state, owner, difficulty, { priorityTarget: mostDangerousShip });
+    if (targetingPath && placementOpensDecentShot(state, targetingPath, mostDangerousShip, difficulty)) {
+      return { type: "place", path: targetingPath };
+    }
+  }
   const path = decidePlacement(state, owner, difficulty);
   if (path) return { type: "place", path };
 
@@ -254,15 +316,53 @@ export function decideBotMove(state, owner, difficultyKey) {
   return null;
 }
 
-/** Highest-pHit candidate, optionally restricted to a set of target ship ids. */
+/** Highest-pHit candidate, optionally restricted to a set of target ship ids - "just take whatever's best odds", no danger-weighting, used only by the last-resort fallbacks above. */
 function bestShotAgainst(candidates, targetIds = null) {
   const pool = targetIds ? candidates.filter((c) => targetIds.includes(c.target.id)) : [...candidates];
   return pool.sort((a, b) => b.pHit - a.pHit)[0] || null;
 }
 
+/**
+ * Pick the candidate shot most worth taking: primarily by how dangerous its
+ * target already is (threatByShipId's pHitMyBase - CLAUDE.md addendum: "not
+ * the closest boat but the one that has the highest potential of becoming
+ * dangerous... the tip of the enemy boats"), our own odds of hitting it only
+ * breaking ties. Optionally restricted to a set of target ship ids.
+ * @param {Array<{originShip, target, pHit, distance}>} candidates
+ * @param {Map<string, number>} threatByShipId
+ * @param {string[]|null} [targetIds]
+ */
+function mostDangerousCandidate(candidates, threatByShipId, targetIds = null) {
+  const pool = targetIds ? candidates.filter((c) => targetIds.includes(c.target.id)) : candidates;
+  if (pool.length === 0) return null;
+  return [...pool].sort((a, b) => {
+    const dangerDiff = (threatByShipId.get(b.target.id) || 0) - (threatByShipId.get(a.target.id) || 0);
+    if (Math.abs(dangerDiff) > 1e-9) return dangerDiff;
+    return b.pHit - a.pHit;
+  })[0];
+}
+
 function toShootMove(candidate, difficulty) {
   const { direction, speed } = aimAt(candidate.originShip, candidate.target, candidate.distance, difficulty);
-  return { type: "shoot", originShip: candidate.originShip, direction, speed };
+  return { type: "shoot", originShip: candidate.originShip, target: candidate.target, direction, speed };
+}
+
+/**
+ * Whether the freehand path decidePlacement() proposed with priorityTarget
+ * set actually lands the new ship somewhere plausible to shoot `target` from
+ * next turn - worth bending the whole P4 placement decision around rather
+ * than falling back to the generic advance/cover pick.
+ * @param {import("./gameState.js").GameState} state
+ * @param {Array<{x:number,y:number}>} path
+ * @param {import("./gameState.js").Ship} target
+ * @param {BotDifficultyConfig} difficulty
+ */
+function placementOpensDecentShot(state, path, target, difficulty) {
+  const endpoint = path[path.length - 1];
+  const mountainShapes = getPlacedIslandWorldShapes(state.islands, state.map).flatMap((island) => island.mountainShapes);
+  const blockingShips = state.ships.filter((ship) => ship.id !== target.id);
+  const pHit = hitProbability(endpoint, target, shipHitRadius(target), difficulty.aimErrorDeg, difficulty.distanceErrorFactor, mountainShapes, blockingShips);
+  return pHit > TARGETING_PLACEMENT_MIN_PROB;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +371,11 @@ function toShootMove(candidate, difficulty) {
 
 /**
  * Every (own ship, enemy ship) pair within CONSIDERATION_RADIUS with a
- * nonzero hitProbability(), using the bot's own difficulty accuracy.
+ * nonzero hitProbability(), using the bot's own difficulty accuracy - except
+ * a pairing already missed MAX_MISSES_BEFORE_AVOIDING_ORIGIN times (CLAUDE.md
+ * addendum: ships never move, so a repeated miss means that exact spot is
+ * "too far away" for this target - stop proposing it and let the priority
+ * cascade in decideBotMove() pivot to something else on its own).
  * @returns {Array<{originShip:import("./gameState.js").Ship, target:import("./gameState.js").Ship, pHit:number, distance:number}>}
  */
 function gatherOwnShotCandidates(state, owner, difficulty) {
@@ -287,6 +391,7 @@ function gatherOwnShotCandidates(state, owner, difficulty) {
     for (const target of enemyShips) {
       const d = distance(originShip, target);
       if (d > CONSIDERATION_RADIUS) continue;
+      if (getBotShotMissCount(state, originShip.id, target.id) >= MAX_MISSES_BEFORE_AVOIDING_ORIGIN) continue;
 
       const blockingShips = state.ships.filter((ship) => ship.id !== originShip.id && ship.id !== target.id);
       const pHit = hitProbability(originShip, target, shipHitRadius(target), difficulty.aimErrorDeg, difficulty.distanceErrorFactor, mountainShapes, blockingShips);
