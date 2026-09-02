@@ -1,0 +1,45 @@
+<!doctype html>
+<title>island shape preview</title>
+<style>html,body{margin:0;background:#0a4a6e;}canvas{display:block;}</style>
+<canvas id="c"></canvas>
+<script type="module">
+import { loadIslandLibrary } from "./js/data/islandLoader.js";
+import { render } from "./js/render/renderer.js";
+
+const canvas = document.getElementById("c");
+const width = 1400, height = 900;
+canvas.width = width;
+canvas.height = height;
+const ctx = canvas.getContext("2d");
+
+const ids = ["island_beach_banana", "island_atoll_scattered"];
+
+async function main() {
+  const library = await loadIslandLibrary("./data/islands/");
+  console.log("loaded", library.length, "islands");
+
+  const islands = ids.map((id) => library.find((e) => e.id === id)).filter(Boolean);
+  console.log("preview targets found:", islands.map((e) => e.id).join(", "));
+
+  const positions = [
+    { x: 0.28, y: 0.5 },
+    { x: 0.72, y: 0.5 },
+  ];
+
+  const map = {
+    seed: 1,
+    islands: islands.map((entry, i) => ({
+      islandId: entry.id,
+      x: positions[i].x,
+      y: positions[i].y,
+      scale: 0.42,
+      rotation: 0,
+    })),
+  };
+
+  const state = { map, islands: library, ships: [] };
+  render(ctx, state, width, height, 0);
+}
+
+main().catch((err) => console.error("preview failed:", err));
+</script>

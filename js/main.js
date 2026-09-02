@@ -9,7 +9,15 @@
 // own turn-taking (js/botController.js). This file holds the project's one
 // allowed global: `state`.
 
-import { createGameState, setIslandLibrary, setMap, addShip, startMatchClock, setMatchMode } from "./engine/gameState.js";
+import {
+  createGameState,
+  setIslandLibrary,
+  setMap,
+  addShip,
+  startMatchClock,
+  setMatchMode,
+  pauseAdjustedTime,
+} from "./engine/gameState.js";
 import {
   initMenuBar,
   initPlacementConfirmUI,
@@ -71,7 +79,7 @@ async function startMatch(mode, botDifficulty) {
   spawnBaseShips(state);
   startMatchClock(state, performance.now());
 
-  initMenuBar(uiOverlay, state, { onRestart: () => restartMatch() });
+  initMenuBar(uiOverlay, state, { onRestart: () => restartMatch(), onHome: () => goHome() });
   initShootButton(uiOverlay, state);
   initShootUI(uiOverlay);
   const onTurnChanged = () => {
@@ -84,10 +92,12 @@ async function startMatch(mode, botDifficulty) {
 }
 
 /**
- * Handle the "Restart game" settings menu item: reshuffle the islands into
- * a brand new random map, remove every ship in play, and re-spawn both
- * base ships at their fixed positions, then refresh UI that isn't redrawn
- * every frame (the menu bar's active-player highlight).
+ * Handle the "Generate new map" settings menu item (and the Rematch
+ * button): reshuffle the islands into a brand new random map, remove every
+ * ship in play, and re-spawn both base ships at their fixed positions, then
+ * refresh UI that isn't redrawn every frame (the menu bar's active-player
+ * highlight). Leaves state.mode/botDifficulty untouched - see goHome() for
+ * the flow that lets the player change those.
  * @returns {void}
  */
 function restartMatch() {
@@ -102,6 +112,25 @@ function restartMatch() {
   state.warning = null;
   updateMenuBar(uiOverlay, state);
   updateShootButton(uiOverlay, state);
+}
+
+/**
+ * Handle the "Home menu" settings menu item (and the button shown next to
+ * Rematch on the post-game screens): drop any post-game modal still showing,
+ * then bring back the exact same Multiplayer/Single Player (+ bot
+ * difficulty) picker shown at page load (js/render/ui.js initStartModal).
+ * Picking a mode there applies it (setMatchMode) and starts a fresh match
+ * the same way "Generate new map" does - it doesn't re-run startMatch(), so
+ * this never attaches a second set of canvas listeners.
+ * @returns {void}
+ */
+function goHome() {
+  uiOverlay.querySelector(".victory-backdrop")?.remove();
+  uiOverlay.querySelector(".high-scores-backdrop")?.remove();
+  initStartModal(uiOverlay, (mode, botDifficulty) => {
+    setMatchMode(state, mode, botDifficulty);
+    restartMatch();
+  });
 }
 
 /**
@@ -153,11 +182,22 @@ function gameLoop(time) {
   // is still null and no base ships have been spawned yet, which would
   // otherwise make isGameOver() look true (no base ships => "missing").
   if (state.map) {
-    updateTimer(uiOverlay, state, time);
-    updateMenuBar(uiOverlay, state, time); // keeps each stat bubble's live score (see js/engine/scoring.js) ticking every frame
-    updateShootUI(uiOverlay, state, time, { onRematch: () => restartMatch() });
+    // Blind to any time spent paused (see gameState.js's pauseAdjustedTime) -
+    // only valid for the match-clock-anchored reads below, not for
+    // render()'s own `time` above (shot tracer/sinking animation timestamps
+    // are stamped in the raw, unadjusted clock instead - see that function's
+    // doc comment).
+    const clockTime = pauseAdjustedTime(state, time);
+    updateTimer(uiOverlay, state, clockTime);
+    updateMenuBar(uiOverlay, state, clockTime); // keeps each stat bubble's live score (see js/engine/scoring.js) ticking every frame
+    updateShootUI(uiOverlay, state, time, { onRematch: () => restartMatch(), onHome: () => goHome() });
     updatePlacementConfirmUI(uiOverlay, state, cssWidth, cssHeight);
-    if (botHandle) botHandle.update(time);
+    // Skipped entirely while paused (rather than fed an adjusted time): the
+    // bot controller's own internal timers are all stamped in the same raw
+    // clock as everything else it reads/writes (shotLine, ship placement),
+    // so simply not calling it is what keeps it correctly frozen - see
+    // gameState.js's pauseAdjustedTime doc comment.
+    if (botHandle && !state.paused) botHandle.update(time);
   }
 
   requestAnimationFrame(gameLoop);

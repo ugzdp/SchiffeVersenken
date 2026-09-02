@@ -324,6 +324,30 @@ body {
   display: flex;
 }
 
+/* Dim full-screen cover shown while the match is paused (Settings > Pause
+   game - see js/render/ui.js). pointer-events: none, same as .blind-cover -
+   js/input.js is what actually blocks play, this is purely the visual cue,
+   and it must stay click-through so Settings remains reachable to press
+   Continue game. */
+#ui-overlay .pause-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+#ui-overlay .pause-overlay--active {
+  display: flex;
+}
+
 /* Transient "too slow" warning banner (CLAUDE.md Action B step 3). */
 #ui-overlay .warning-banner {
   position: absolute;
@@ -418,6 +442,24 @@ body {
 #ui-overlay .modal-start-btn {
   background: #3fae4a;
   font-weight: 600;
+}
+
+/* Start modal's mode/difficulty choice steps (see js/render/ui.js
+   initStartModal): each button reuses .modal-start-btn's green look, laid
+   out in a row instead of stacked one-per-line. */
+#ui-overlay .modal-choice-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* "Zurück" (Back) on the difficulty step - visually lighter than the green
+   choice buttons above it, so it doesn't compete with them. */
+#ui-overlay .modal-back-btn {
+  background: transparent;
+  opacity: 0.75;
+  font-size: 14px;
 }
 
 /* "Time to win" line on the victory screen (see js/render/ui.js

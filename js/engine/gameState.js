@@ -89,9 +89,20 @@
  * @property {"pvp"|"pvb"} mode - "pvp" (two humans, hot-seat) or "pvb" (one
  *   human, player 1, against the bot, always player 2 - see js/botController.js).
  *   Chosen once on the start modal (js/render/ui.js initStartModal) and left
- *   untouched by resetMatch(), so it survives "Restart game".
+ *   untouched by resetMatch(), so it survives "Generate new map".
  * @property {"easy"|"medium"|"hard"|null} botDifficulty - only meaningful
  *   when mode is "pvb" (see js/engine/bot.js's BOT_DIFFICULTY)
+ * @property {boolean} paused - true while the match is paused (Settings >
+ *   Pause game - see js/render/ui.js). js/input.js blocks canvas pointer
+ *   input while this is true, and main.js skips the bot controller's
+ *   per-frame update() - see pauseMatch()/resumeMatch() below.
+ * @property {number|null} pausedAt - timestamp (same clock as
+ *   requestAnimationFrame/event.timeStamp) the current pause began, or null
+ *   while not paused
+ * @property {number} pausedDurationMs - total time spent paused so far this
+ *   match, folded in by resumeMatch() each time a pause ends - see
+ *   pauseAdjustedTime() below, which uses this to keep the match clock and
+ *   score pace bonus blind to any time spent paused
  */
 
 /** Turn/phase state machine values (see CLAUDE.md "Game phases"). */
@@ -121,14 +132,18 @@ export function createGameState() {
     matchEndTime: null,
     mode: "pvp",
     botDifficulty: null,
+    paused: false,
+    pausedAt: null,
+    pausedDurationMs: 0,
   };
 }
 
 /**
  * Record the start modal's mode/difficulty choice (js/render/ui.js
- * initStartModal). Called once by main.js's startMatch(), before the first
- * map is generated - not reset by resetMatch(), so it stays in effect across
- * "Restart game" for the rest of the browser session.
+ * initStartModal). Called by main.js's startMatch(), before the first map is
+ * generated, and again by goHome() whenever the player picks a mode from
+ * the Home menu - not reset by resetMatch(), so it otherwise stays in effect
+ * across "Generate new map" for the rest of the browser session.
  * @param {GameState} state
  * @param {"pvp"|"pvb"} mode
  * @param {"easy"|"medium"|"hard"|null} [botDifficulty] - required when mode is "pvb"
@@ -246,6 +261,9 @@ export function resetMatch(state) {
   state.stats = { 1: createStatCounters(), 2: createStatCounters() };
   state.matchStartTime = null;
   state.matchEndTime = null;
+  state.paused = false;
+  state.pausedAt = null;
+  state.pausedDurationMs = 0;
 }
 
 /** @returns {StatCounters} a fresh, all-zero counter block for one player. */
@@ -256,7 +274,7 @@ function createStatCounters() {
 /**
  * Start (or restart) the match clock shown as a counting-up timer in the
  * menu bar. Called once a fresh match's base ships are in play - both at
- * the very first match of a session and after "Restart game".
+ * the very first match of a session and after "Generate new map".
  * @param {GameState} state
  * @param {number} time - timestamp (same clock as requestAnimationFrame/
  *   event.timeStamp) marking 00:00 for this match
@@ -278,6 +296,59 @@ export function startMatchClock(state, time) {
  */
 export function endMatchClock(state, time) {
   if (state.matchEndTime === null) state.matchEndTime = time;
+}
+
+/**
+ * Pause the match (Settings > Pause game - see js/render/ui.js). Only
+ * freezes the bits of state this module owns (the paused flag/timestamp);
+ * js/input.js is responsible for actually blocking canvas pointer input,
+ * and main.js for skipping the bot controller's per-frame update(), both by
+ * checking state.paused themselves. Idempotent - pausing an already-paused
+ * match does nothing.
+ * @param {GameState} state
+ * @param {number} time - timestamp (same clock as requestAnimationFrame/
+ *   event.timeStamp) marking the moment the pause began
+ * @returns {void}
+ */
+export function pauseMatch(state, time) {
+  if (state.paused) return;
+  state.paused = true;
+  state.pausedAt = time;
+}
+
+/**
+ * Resume a paused match (see pauseMatch): folds the just-finished pause into
+ * state.pausedDurationMs, so pauseAdjustedTime() below can keep treating any
+ * time spent paused as if it never happened. Idempotent.
+ * @param {GameState} state
+ * @param {number} time - timestamp marking the moment the match resumed
+ * @returns {void}
+ */
+export function resumeMatch(state, time) {
+  if (!state.paused) return;
+  state.pausedDurationMs += time - state.pausedAt;
+  state.paused = false;
+  state.pausedAt = null;
+}
+
+/**
+ * Adjust a raw timestamp for any calculation anchored on state.matchStartTime
+ * (the match clock in js/render/ui.js's updateTimer, and the live score pace
+ * bonus in js/engine/scoring.js's computeScore) so a pause is invisible to
+ * it: frozen at the instant the pause began while still paused, otherwise
+ * live time with every past pause's duration subtracted out.
+ *
+ * NOT valid for anything else - state.shotLine/sinkingShips timestamps, the
+ * bot controller, and state.warning are all stamped with (and compared
+ * against) raw, unadjusted time throughout the match rather than anchored to
+ * a single fixed point like matchStartTime, so mixing this in would corrupt
+ * them instead of fixing them.
+ * @param {GameState} state
+ * @param {number} time - the real timestamp for the current frame
+ * @returns {number}
+ */
+export function pauseAdjustedTime(state, time) {
+  return (state.paused ? state.pausedAt : time) - state.pausedDurationMs;
 }
 
 /**

@@ -9,10 +9,11 @@
 //
 // Driven entirely by a per-frame update(time) call from main.js's render
 // loop (the same pattern main.js already uses for updateMenuBar() etc.)
-// rather than setTimeout chains, so a mid-turn "Restart game" can't leave a
-// stale timer waiting to fire against the next match - reset() (called by
-// main.js on restart, same as js/input.js's cancelPendingPlacementTimer())
-// is all that's needed to stop a bot turn cleanly.
+// rather than setTimeout chains, so a mid-turn "Generate new map"/Home menu
+// can't leave a stale timer waiting to fire against the next match - reset()
+// (called by main.js on restart, same as js/input.js's
+// cancelPendingPlacementTimer()) is all that's needed to stop a bot turn
+// cleanly.
 
 import { Phase, setPhase } from "./engine/gameState.js";
 import { beginPlacementConfirmation, commitPlacement, endTurn, fireShot, placeShip } from "./engine/actions.js";
@@ -184,7 +185,7 @@ export function initBotController(state, onTurnChanged) {
     }
   }
 
-  /** Stop mid-turn (e.g. "Restart game"), so a stale in-progress bot turn can't act on the next match. */
+  /** Stop mid-turn (e.g. "Generate new map" or Home menu), so a stale in-progress bot turn can't act on the next match. */
   function reset() {
     phase = "idle";
     animPath = null;

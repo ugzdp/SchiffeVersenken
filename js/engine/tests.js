@@ -22,12 +22,18 @@ import {
   swipeSpeedToDistance,
   MIN_SHOT_DISTANCE,
   MAX_SHOT_DISTANCE,
+  MIN_SWIPE_SPEED,
+  MAX_SWIPE_SPEED,
+  MAX_LINE_LENGTH,
   SHIP_HITBOX_RADIUS,
   shipHitRadius,
   tryExtendDragPath,
   isValidShipPlacementPath,
+  getPlacedIslandWorldShapes,
+  distance,
 } from "./rules.js";
 import { generateMap, createSeededRandom } from "./mapGenerator.js";
+import { BOT_DIFFICULTY, decideBotMove, gatherShotCandidates } from "./bot.js";
 
 // ---------------------------------------------------------------------------
 // Tiny assert helper
@@ -511,6 +517,151 @@ console.log("generateMap");
   assert(allSeparated, "no two placed islands' bounding circles overlap");
 
   console.log(`  (generated ${mapA.islands.length} islands for seed 42)`);
+}
+
+// ---------------------------------------------------------------------------
+// bot.js
+// ---------------------------------------------------------------------------
+
+console.log("bot.js - BOT_DIFFICULTY config respects the design requirements");
+{
+  assert(BOT_DIFFICULTY.easy.aimErrorDeg > BOT_DIFFICULTY.medium.aimErrorDeg, "easy has more aim error than medium");
+  assert(BOT_DIFFICULTY.medium.aimErrorDeg > BOT_DIFFICULTY.hard.aimErrorDeg, "medium has more aim error than hard");
+  assert(
+    BOT_DIFFICULTY.easy.distanceErrorFactor > BOT_DIFFICULTY.medium.distanceErrorFactor,
+    "easy has more distance-judgement error than medium"
+  );
+  assert(
+    BOT_DIFFICULTY.medium.distanceErrorFactor > BOT_DIFFICULTY.hard.distanceErrorFactor,
+    "medium has more distance-judgement error than hard"
+  );
+  assert(
+    BOT_DIFFICULTY.easy.engagementRange < BOT_DIFFICULTY.medium.engagementRange,
+    "easy only attempts shots at a closer range than medium"
+  );
+  assert(
+    BOT_DIFFICULTY.medium.engagementRange < BOT_DIFFICULTY.hard.engagementRange,
+    "medium only attempts shots at a closer range than hard"
+  );
+  assert(BOT_DIFFICULTY.hard.baseSnipeMaxDistance === 0.5, "hard bot's base-snipe cap is half the play field (0-1 space)");
+}
+
+console.log("bot.js - gatherShotCandidates (engagement range + base-snipe cap)");
+{
+  const emptyMap = { seed: 1, islands: [] };
+  const botShip = { id: "bot-1", owner: 2, x: 0.1, y: 0.5, isBase: false };
+  const nearTarget = { id: "enemy-near", owner: 1, x: 0.1 + 0.35, y: 0.5, isBase: false }; // distance 0.35
+  const farBase = { id: "enemy-base-far", owner: 1, x: 0.1 + 0.6, y: 0.5, isBase: true }; // distance 0.6
+  const stateA = { islands: [], map: emptyMap, ships: [botShip, nearTarget, farBase] };
+
+  const easyCandidates = gatherShotCandidates(stateA, 2, BOT_DIFFICULTY.easy);
+  assert(easyCandidates.length === 0, "easy bot (range 0.3) has no candidate for a target 0.35 away");
+
+  const mediumCandidates = gatherShotCandidates(stateA, 2, BOT_DIFFICULTY.medium);
+  assert(
+    mediumCandidates.length === 1 && mediumCandidates[0].target.id === "enemy-near",
+    "medium bot (range 0.5) can shoot the 0.35-away ship but not the 0.6-away base"
+  );
+
+  const hardCandidates = gatherShotCandidates(stateA, 2, BOT_DIFFICULTY.hard);
+  assert(
+    hardCandidates.length === 1 && hardCandidates[0].target.id === "enemy-near",
+    "hard bot's general range (0.8) would reach the far base, but baseSnipeMaxDistance (0.5) excludes it"
+  );
+
+  const nearBase = { id: "enemy-base-near", owner: 1, x: 0.1 + 0.45, y: 0.5, isBase: true }; // distance 0.45
+  const stateB = { islands: [], map: emptyMap, ships: [botShip, nearBase] };
+  const hardCandidatesNearBase = gatherShotCandidates(stateB, 2, BOT_DIFFICULTY.hard);
+  assert(
+    hardCandidatesNearBase.length === 1 && hardCandidatesNearBase[0].target.isBase,
+    "hard bot DOES line up a base shot once it's within baseSnipeMaxDistance"
+  );
+}
+
+console.log("bot.js - gatherShotCandidates (mountain / other ships block line of sight)");
+{
+  const mountainIsland = {
+    id: "island_los_test",
+    type: "normal",
+    landShape: [[0, 0], [1, 0], [1, 1], [0, 1]],
+    mountainShapes: [[[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]]],
+    decorations: [],
+  };
+  const map = { seed: 2, islands: [{ islandId: "island_los_test", x: 0.5, y: 0.5, scale: 0.2, rotation: 0 }] };
+  const botShip = { id: "bot-1", owner: 2, x: 0.1, y: 0.5, isBase: false };
+  const enemyBehindMountain = { id: "enemy-1", owner: 1, x: 0.9, y: 0.5, isBase: false }; // straight line crosses the mountain core at (0.5,0.5)
+  const stateWithMountain = { islands: [mountainIsland], map, ships: [botShip, enemyBehindMountain] };
+
+  const blockedByMountain = gatherShotCandidates(stateWithMountain, 2, BOT_DIFFICULTY.hard);
+  assert(blockedByMountain.length === 0, "a mountain directly between origin and target blocks the candidate");
+
+  const emptyMap = { seed: 3, islands: [] };
+  const blockingShip = { id: "blocker", owner: 2, x: 0.1 + 0.2, y: 0.5, isBase: false }; // bot's own ship, directly on the line
+  const enemyShip = { id: "enemy-2", owner: 1, x: 0.1 + 0.4, y: 0.5, isBase: false };
+  const stateWithBlocker = { islands: [], map: emptyMap, ships: [botShip, blockingShip, enemyShip] };
+
+  const blockedByOwnShip = gatherShotCandidates(stateWithBlocker, 2, BOT_DIFFICULTY.hard);
+  assert(
+    blockedByOwnShip.length === 0,
+    "the bot's own ship sitting on the line to the target blocks the candidate (no accidental own-goal proposal)"
+  );
+}
+
+console.log("bot.js - decideBotMove (placement produces a legal, budget-capped path)");
+{
+  const island = {
+    id: "island_place_test",
+    type: "normal",
+    landShape: [[0, 0], [1, 0], [1, 1], [0, 1]],
+    mountainShapes: [],
+    decorations: [],
+  };
+  const map = { seed: 4, islands: [{ islandId: "island_place_test", x: 0.5, y: 0.5, scale: 0.15, rotation: 0 }] };
+  const botShip = { id: "bot-1", owner: 2, x: 0.15, y: 0.85, isBase: true };
+  const state = { islands: [island], map, ships: [botShip] }; // no enemy ships at all - decideAction always picks "place"
+
+  let placedCount = 0;
+  for (let i = 0; i < 20; i++) {
+    const move = decideBotMove(state, 2, "medium");
+    if (move && move.type === "place") {
+      const islandWorldShapes = getPlacedIslandWorldShapes(state.islands, state.map);
+      assert(
+        isValidShipPlacementPath(move.path, islandWorldShapes, state.ships),
+        "bot's proposed placement path is a legal ship placement"
+      );
+      let pathLen = 0;
+      for (let p = 1; p < move.path.length; p++) pathLen += distance(move.path[p - 1], move.path[p]);
+      assert(pathLen <= MAX_LINE_LENGTH + 1e-9, "bot's placement path respects the length budget");
+      placedCount++;
+    }
+  }
+  assert(placedCount === 20, "with no enemy ships in play, every trial chose to place a ship");
+}
+
+console.log("bot.js - decideBotMove (hard bot lines up an in-range base shot deterministically)");
+{
+  const emptyMap = { seed: 5, islands: [] };
+  const botShip = { id: "bot-1", owner: 2, x: 0.1, y: 0.5, isBase: false };
+  const enemyBase = { id: "enemy-base", owner: 1, x: 0.1 + 0.4, y: 0.5, isBase: true }; // distance 0.4, within hard's 0.5 cap
+  const state = { islands: [], map: emptyMap, ships: [botShip, enemyBase] };
+
+  const move = decideBotMove(state, 2, "hard");
+  assert(!!move && move.type === "shoot", "hard bot always takes an available, in-range base shot");
+  assert(move.originShip.id === "bot-1", "shot originates from the bot's own ship");
+
+  const dirLen = Math.hypot(move.direction[0], move.direction[1]);
+  assert(Math.abs(dirLen - 1) < 1e-6, "shot direction is a unit vector");
+  assert(
+    move.speed >= MIN_SWIPE_SPEED - 1e-9 && move.speed <= MAX_SWIPE_SPEED + 1e-9,
+    "shot speed stays within the valid swipe range"
+  );
+
+  // True angle here is 0 (straight along +x) - any deviation is aim noise.
+  const angleErrorDeg = (Math.abs(Math.atan2(move.direction[1], move.direction[0])) * 180) / Math.PI;
+  assert(
+    angleErrorDeg <= BOT_DIFFICULTY.hard.aimErrorDeg + 1e-6,
+    "hard bot's aim noise stays within its configured error bound"
+  );
 }
 
 // ---------------------------------------------------------------------------

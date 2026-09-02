@@ -6,7 +6,7 @@
 // black overlay, warnings and victory screen. For now it only builds the
 // top menu bar and the Shoot button.
 
-import { Phase, getBaseShip, isGameOver, setPhase } from "../engine/gameState.js";
+import { Phase, getBaseShip, isGameOver, pauseMatch, resumeMatch, setPhase } from "../engine/gameState.js";
 import { computeScore } from "../engine/scoring.js";
 import { relToPixel } from "./coords.js";
 import { isMuted, playClick, playGunCock, toggleMuted, unlockAudio } from "./audio.js";
@@ -63,7 +63,7 @@ document.addEventListener(
  * `state.currentPlayer` gets a green outline to show whose turn it is.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
  * @param {import("../engine/gameState.js").GameState} state
- * @param {{onRestart?: () => void}} [callbacks] - handlers for settings menu items
+ * @param {{onRestart?: () => void, onHome?: () => void}} [callbacks] - handlers for settings menu items
  * @returns {void}
  */
 export function initMenuBar(overlayEl, state, callbacks = {}) {
@@ -72,7 +72,7 @@ export function initMenuBar(overlayEl, state, callbacks = {}) {
 
   const leftGroup = document.createElement("div");
   leftGroup.className = "menu-bar-left";
-  leftGroup.appendChild(createSettingsMenu(callbacks, overlayEl));
+  leftGroup.appendChild(createSettingsMenu(callbacks, overlayEl, state));
   leftGroup.appendChild(createRulesButton(overlayEl));
   bar.appendChild(leftGroup);
 
@@ -235,11 +235,13 @@ function updateStatCounters(counterBlocks, state, time) {
  * item or clicking anywhere else on the page. Rules lives in its own
  * standalone button next to Settings (see createRulesButton) rather than
  * in this dropdown.
- * @param {{onRestart?: () => void}} callbacks
+ * @param {{onRestart?: () => void, onHome?: () => void}} callbacks
  * @param {HTMLElement} overlayEl - the #ui-overlay element, needed to show the leaderboard modal
+ * @param {import("../engine/gameState.js").GameState} state - needed by the
+ *   Pause game item (reads/writes state.paused/state.phase/state.dragPath)
  * @returns {HTMLElement} wrapper element containing both the button and its dropdown
  */
-function createSettingsMenu(callbacks, overlayEl) {
+function createSettingsMenu(callbacks, overlayEl, state) {
   const wrap = document.createElement("div");
   wrap.className = "settings-wrap";
 
@@ -255,12 +257,39 @@ function createSettingsMenu(callbacks, overlayEl) {
   const restartBtn = document.createElement("button");
   restartBtn.type = "button";
   restartBtn.className = "settings-menu-item";
-  restartBtn.textContent = "Restart game";
+  restartBtn.textContent = "Generate new map";
   restartBtn.addEventListener("click", () => {
     dropdown.classList.remove("settings-dropdown--open");
     if (callbacks.onRestart) callbacks.onRestart();
   });
   dropdown.appendChild(restartBtn);
+
+  const pauseBtn = document.createElement("button");
+  pauseBtn.type = "button";
+  pauseBtn.className = "settings-menu-item";
+  const syncPauseLabel = () => {
+    pauseBtn.textContent = state.paused ? "Continue game" : "Pause game";
+  };
+  syncPauseLabel();
+  pauseBtn.addEventListener("click", () => {
+    dropdown.classList.remove("settings-dropdown--open");
+    if (state.paused) {
+      resumeMatch(state, performance.now());
+    } else {
+      // Only pausable during the "calm" moment between turns - waiting for
+      // the current player to place a ship or press Shoot, with no drag in
+      // progress - so it never has to race the real-wallclock setTimeout
+      // windows CONFIRMING_PLACEMENT/SHOT_RESOLVE briefly run (the undo-cross
+      // timer, the shot-tracer display), which would otherwise be able to
+      // silently fire and pass the turn while the screen reads "paused".
+      // Matches the Shoot button's own existing precedent of being a no-op
+      // outside the phases it's meant for.
+      if (state.phase !== Phase.PLACING || state.dragPath) return;
+      pauseMatch(state, performance.now());
+    }
+    syncPauseLabel();
+  });
+  dropdown.appendChild(pauseBtn);
 
   const leaderboardBtn = document.createElement("button");
   leaderboardBtn.type = "button";
@@ -284,6 +313,20 @@ function createSettingsMenu(callbacks, overlayEl) {
     syncSoundLabel();
   });
   dropdown.appendChild(soundBtn);
+
+  const homeBtn = document.createElement("button");
+  homeBtn.type = "button";
+  homeBtn.className = "settings-menu-item";
+  homeBtn.textContent = "Home menu";
+  homeBtn.addEventListener("click", () => {
+    dropdown.classList.remove("settings-dropdown--open");
+    // Mid-match this abandons real progress (unlike the post-game Home menu
+    // button next to Rematch, which has nothing left to lose) - confirm
+    // first, same as the leaderboard's "Reset stats".
+    if (!confirm("Leave this match and return to the home menu?")) return;
+    if (callbacks.onHome) callbacks.onHome();
+  });
+  dropdown.appendChild(homeBtn);
 
   wrap.appendChild(dropdown);
 
@@ -317,14 +360,6 @@ function createRulesButton(overlayEl) {
   return rulesBtn;
 }
 
-/**
- * Show the start-game modal ("Schiffe Versenken" title, "Spiel starten"
- * button). Blocks interaction with the rest of the UI behind it until
- * the button is pressed, then removes itself and calls `onStart`.
- * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
- * @param {() => void} onStart - called once the player presses "Spiel starten"
- * @returns {void}
- */
 /**
  * Show the start modal: first a Multiplayer/Single Player choice, then -
  * only if Single Player was picked - a bot difficulty choice (easy/medium/
@@ -685,10 +720,10 @@ export function updateShootButton(overlayEl, state) {
 
 /**
  * Create the DOM elements owned by updateShootUI() (red screen border,
- * black blind-shot cover, "too slow" warning banner) and append them to
- * the UI overlay. All three start hidden; updateShootUI() toggles them
- * every frame based on state.phase/state.warning. Call once at match start,
- * alongside initShootButton().
+ * black blind-shot cover, "too slow" warning banner, paused overlay) and
+ * append them to the UI overlay. All start hidden; updateShootUI() toggles
+ * them every frame based on state.phase/state.warning/state.paused. Call
+ * once at match start, alongside initShootButton().
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
  * @returns {void}
  */
@@ -705,6 +740,14 @@ export function initShootUI(overlayEl) {
   const warningBanner = document.createElement("div");
   warningBanner.className = "warning-banner";
   overlayEl.appendChild(warningBanner);
+
+  // Purely visual - js/input.js is what actually blocks pointer input while
+  // state.paused (pointer-events: none here, same as .blind-cover, so it
+  // never gets in the way of reopening Settings to press Continue game).
+  const pauseOverlay = document.createElement("div");
+  pauseOverlay.className = "pause-overlay";
+  pauseOverlay.textContent = "Paused";
+  overlayEl.appendChild(pauseOverlay);
 }
 
 /**
@@ -713,18 +756,20 @@ export function initShootUI(overlayEl) {
  * win condition): the red screen border while shoot mode is active
  * (Phase.AIMING_SHOT/BLIND_SHOT), the black blind-shot cover
  * (Phase.BLIND_SHOT only), the transient "too slow" warning
- * (state.warning, set by js/input.js), and the victory screen once
+ * (state.warning, set by js/input.js), the dim "Paused" overlay
+ * (state.paused, set by Settings > Pause game), and the victory screen once
  * isGameOver(state) - built lazily so it only ever appears once per match.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
  * @param {import("../engine/gameState.js").GameState & {warning?: {text:string, until:number}|null}} state
  * @param {number} time - ms timestamp, e.g. from requestAnimationFrame
- * @param {{onRematch?: () => void}} [callbacks]
+ * @param {{onRematch?: () => void, onHome?: () => void}} [callbacks]
  * @returns {void}
  */
 export function updateShootUI(overlayEl, state, time, callbacks = {}) {
   const shootModeActive = state.phase === Phase.AIMING_SHOT || state.phase === Phase.BLIND_SHOT;
   overlayEl.querySelector(".red-border")?.classList.toggle("red-border--active", shootModeActive);
   overlayEl.querySelector(".blind-cover")?.classList.toggle("blind-cover--active", state.phase === Phase.BLIND_SHOT);
+  overlayEl.querySelector(".pause-overlay")?.classList.toggle("pause-overlay--active", state.paused);
 
   const warningBanner = overlayEl.querySelector(".warning-banner");
   if (warningBanner) {
@@ -902,11 +947,12 @@ function showVictoryScreen(overlayEl, state, callbacks) {
  * Continue on the victory screen: just the human's all-time record against
  * this bot difficulty (js/data/leaderboardStore.js's `vsBot`, kept separate
  * from the PvP "Top Scores" ranking - see showHighScoresScreen) and a
- * Rematch button. Pressing Rematch here is what actually starts the next
- * match, same as showHighScoresScreen's.
+ * Rematch button, plus a Home menu button (see showHighScoresScreen's for
+ * what that does) next to it. Pressing Rematch here is what actually starts
+ * the next match, same as showHighScoresScreen's.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
  * @param {import("../engine/gameState.js").GameState} state
- * @param {{onRematch?: () => void}} callbacks
+ * @param {{onRematch?: () => void, onHome?: () => void}} callbacks
  * @returns {void}
  */
 function showSoloResultScreen(overlayEl, state, callbacks) {
@@ -930,6 +976,9 @@ function showSoloResultScreen(overlayEl, state, callbacks) {
     `(${record.gamesPlayed} played)`;
   modal.appendChild(note);
 
+  const actions = document.createElement("div");
+  actions.className = "modal-choice-row";
+
   const rematchBtn = document.createElement("button");
   rematchBtn.type = "button";
   rematchBtn.className = "btn modal-start-btn";
@@ -939,10 +988,35 @@ function showSoloResultScreen(overlayEl, state, callbacks) {
     overlayEl.querySelector(".victory-backdrop")?.remove(); // the hidden round-summary screen (see showVictoryScreen's Continue handler)
     if (callbacks.onRematch) callbacks.onRematch();
   });
-  modal.appendChild(rematchBtn);
+  actions.appendChild(rematchBtn);
+  actions.appendChild(createHomeButton(overlayEl, callbacks));
+  modal.appendChild(actions);
 
   backdrop.appendChild(modal);
   overlayEl.appendChild(backdrop);
+}
+
+/**
+ * Build the "Home menu" button shown next to Rematch on both post-game
+ * screens (showSoloResultScreen/showHighScoresScreen): drops whichever of
+ * the two post-game backdrops is currently showing, same cleanup Rematch
+ * itself does, then hands off to `callbacks.onHome` (main.js's goHome()) to
+ * bring back the Multiplayer/Single Player picker.
+ * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
+ * @param {{onHome?: () => void}} callbacks
+ * @returns {HTMLElement}
+ */
+function createHomeButton(overlayEl, callbacks) {
+  const homeBtn = document.createElement("button");
+  homeBtn.type = "button";
+  homeBtn.className = "btn modal-back-btn";
+  homeBtn.textContent = "Home menu";
+  homeBtn.addEventListener("click", () => {
+    overlayEl.querySelector(".high-scores-backdrop")?.remove();
+    overlayEl.querySelector(".victory-backdrop")?.remove(); // the hidden round-summary screen (see showVictoryScreen's Continue handler)
+    if (callbacks.onHome) callbacks.onHome();
+  });
+  return homeBtn;
 }
 
 // Column labels shared between the header row and each data row of the
@@ -960,13 +1034,15 @@ const HIGH_SCORE_COLUMNS = ["#", "Score", "Shots", "Hits", "Time"];
  * score, shots fired, ships hit and time to win. The match that was just
  * played is highlighted - in place if it lands in that top three, or as its
  * own row below a small gap, labeled with its actual rank, if it doesn't.
- * Pressing Rematch here is what actually starts the next match.
+ * Pressing Rematch here is what actually starts the next match; the Home
+ * menu button next to it (see createHomeButton) instead returns to the
+ * Multiplayer/Single Player picker.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
  * @param {{score:number, shots:number, hits:number, durationMs:number|null}} attempt -
  *   the just-played match's winning-side result (see showVictoryScreen)
  * @param {number} matchTimestamp - the id recordMatchResult() gave this
  *   match's `attempts` entry, used to find/highlight it again after sorting
- * @param {{onRematch?: () => void}} callbacks
+ * @param {{onRematch?: () => void, onHome?: () => void}} callbacks
  * @returns {void}
  */
 function showHighScoresScreen(overlayEl, attempt, matchTimestamp, callbacks) {
@@ -1010,6 +1086,9 @@ function showHighScoresScreen(overlayEl, attempt, matchTimestamp, callbacks) {
   note.textContent = `Rank ${currentRank} of ${totalAttempts} win${totalAttempts === 1 ? "" : "s"} on this device.`;
   modal.appendChild(note);
 
+  const actions = document.createElement("div");
+  actions.className = "modal-choice-row";
+
   const rematchBtn = document.createElement("button");
   rematchBtn.type = "button";
   rematchBtn.className = "btn modal-start-btn";
@@ -1019,7 +1098,9 @@ function showHighScoresScreen(overlayEl, attempt, matchTimestamp, callbacks) {
     overlayEl.querySelector(".victory-backdrop")?.remove(); // the hidden round-summary screen (see showVictoryScreen's Continue handler)
     if (callbacks.onRematch) callbacks.onRematch();
   });
-  modal.appendChild(rematchBtn);
+  actions.appendChild(rematchBtn);
+  actions.appendChild(createHomeButton(overlayEl, callbacks));
+  modal.appendChild(actions);
 
   backdrop.appendChild(modal);
   overlayEl.appendChild(backdrop);

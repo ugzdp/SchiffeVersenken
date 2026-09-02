@@ -188,8 +188,8 @@ export function endTurn(state) {
  * island library, clear every ship in play, and spawn each player's base
  * ship at its fixed start position (BASE_SHIP_START in rules.js) - the
  * same spot every match, independent of the random map. Used both for the
- * very first map of a session and for the settings menu's "Restart game"
- * item.
+ * very first map of a session and for the settings menu's "Generate new map"
+ * item (and the Home menu, once a mode is picked there).
  * @param {import("./gameState.js").GameState} state
  * @param {number} [seed] - defaults to a random seed, so each restart gets a new layout
  * @returns {void}

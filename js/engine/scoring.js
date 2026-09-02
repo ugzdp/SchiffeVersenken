@@ -12,15 +12,19 @@ import { getBaseShip, getShipsByOwner } from "./gameState.js";
 
 /**
  * Tunable weights behind computeScore(), kept in one place so the formula's
- * balance can be adjusted without touching the calculation itself:
+ * balance can be adjusted without touching the calculation itself. Shooting
+ * the enemy is deliberately the dominant factor - ENEMY_SHIP_SUNK and
+ * ACCURACY_BONUS_MAX are the largest per-shot contributors, well above what
+ * fleet size alone can earn or lose:
  *   - ENEMY_SHIP_SUNK / VICTORY_BONUS reward offense that actually lands -
- *     sinking the enemy base at the end is worth far more than any one ship.
+ *     sinking the enemy base at the end is still worth the most of all, but
+ *     only a few times any one ship, not tens of times.
  *   - ACCURACY_BONUS_MAX / SHOT_PENALTY reward aiming carefully (CLAUDE.md's
  *     blind, swipe-aimed shot) over spraying blind shots hoping for a hit.
- *   - SHIP_ALIVE_BONUS / SHIP_LOST_PENALTY reward keeping a fleet on the
- *     board - ships "spread across the map like a network" per CLAUDE.md -
- *     and punish losing one (including friendly fire against yourself)
- *     harder than it cost to place.
+ *   - SHIP_ALIVE_BONUS / SHIP_LOST_PENALTY are intentionally small - fleet
+ *     size is a minor, secondary factor next to actually landing shots, and
+ *     losing a ship (including friendly fire against yourself) should sting
+ *     without swinging the score the way a sunk enemy ship does.
  *   - PACE_BONUS_MAX / PACE_BONUS_WINDOW_MS reward a swiftly decided match.
  *     It runs off the one shared match clock (js/engine/gameState.js
  *     startMatchClock/endMatchClock), so it decays identically for both
@@ -28,13 +32,13 @@ import { getBaseShip, getShipsByOwner } from "./gameState.js";
  *     either player's own thinking time.
  */
 export const SCORE_WEIGHTS = {
-  ENEMY_SHIP_SUNK: 150,
-  VICTORY_BONUS: 500,
-  ACCURACY_BONUS_MAX: 200,
-  SHOT_PENALTY: 5,
-  SHIP_ALIVE_BONUS: 20,
-  SHIP_LOST_PENALTY: 60,
-  PACE_BONUS_MAX: 300,
+  ENEMY_SHIP_SUNK: 40,
+  VICTORY_BONUS: 60,
+  ACCURACY_BONUS_MAX: 25,
+  SHOT_PENALTY: 2,
+  SHIP_ALIVE_BONUS: 4,
+  SHIP_LOST_PENALTY: 8,
+  PACE_BONUS_MAX: 30,
   PACE_BONUS_WINDOW_MS: 5 * 60 * 1000, // 5 minutes - full bonus decays to 0 by here
 };
 

@@ -186,7 +186,7 @@ function decideAction(state, owner, difficulty) {
  * @param {BotDifficultyConfig} difficulty
  * @returns {Array<{originShip:import("./gameState.js").Ship, target:import("./gameState.js").Ship, direction:[number,number], distance:number}>}
  */
-function gatherShotCandidates(state, owner, difficulty) {
+export function gatherShotCandidates(state, owner, difficulty) {
   const ownShips = getShipsByOwner(state, owner);
   const enemyOwner = owner === 1 ? 2 : 1;
   const enemyShips = getShipsByOwner(state, enemyOwner);

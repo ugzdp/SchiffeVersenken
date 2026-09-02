@@ -42,8 +42,6 @@ import {
   playTooSlow,
   playUndo,
   playVictory,
-  startDragWater,
-  stopDragWater,
   unlockAudio,
 } from "./render/audio.js";
 
@@ -95,6 +93,12 @@ export function initInput(canvas, state, onTurnChanged) {
     // start audio outside one). A no-op once already running.
     unlockAudio();
 
+    // Settings > Pause game (see js/render/ui.js) blocks every player action
+    // until Continue game is pressed - pauseMatch()/resumeMatch() in
+    // js/engine/gameState.js only track the flag itself, this is where it's
+    // actually enforced.
+    if (state.paused) return;
+
     // Single-player: the bot (always player 2) plays its own turn through
     // js/botController.js, not pointer events - ignore touches while it's
     // the bot's turn so the human can't act on its behalf. The one
@@ -127,7 +131,6 @@ export function initInput(canvas, state, onTurnChanged) {
         owner: state.currentPlayer,
         valid: false, // a zero-length path always lands back on the origin ship
       };
-      startDragWater(); // soft ripple loop for as long as the path is being dragged
       return;
     }
 
@@ -152,6 +155,7 @@ export function initInput(canvas, state, onTurnChanged) {
   });
 
   canvas.addEventListener("pointermove", (event) => {
+    if (state.paused) return; // defense in depth - a drag/blindShot can't legally be in flight while paused (see the pointerdown guard above)
     if (dragPath) {
       const rel = pixelToRel(canvas, event);
       const width = canvas.clientWidth;
@@ -177,6 +181,7 @@ export function initInput(canvas, state, onTurnChanged) {
   });
 
   canvas.addEventListener("pointerup", (event) => {
+    if (state.paused) return; // defense in depth - see the pointerdown guard above
     if (dragPath) {
       const owner = state.currentPlayer;
       const path = dragPath;
@@ -184,7 +189,6 @@ export function initInput(canvas, state, onTurnChanged) {
       dragPath = null;
       dragPathLengthPx = 0;
       state.dragPath = null;
-      stopDragWater();
 
       const ship = placeShip(state, owner, path);
       if (ship) {
@@ -210,7 +214,6 @@ export function initInput(canvas, state, onTurnChanged) {
     dragPath = null;
     dragPathLengthPx = 0;
     state.dragPath = null;
-    stopDragWater();
     if (blindShot) {
       setPhase(state, Phase.AIMING_SHOT);
       blindShot = null;
