@@ -81,12 +81,12 @@ export function initMenuBar(overlayEl, state, callbacks = {}) {
 
   // Player 1's counters sit to the left of their label, player 2's to the
   // right of theirs, so each player's stats stay next to their own name.
-  players.appendChild(createStatCounters(1, "bar"));
+  players.appendChild(createStatCounters(1, "bar", state));
 
   const player1 = document.createElement("span");
   player1.className = "player-label";
   player1.dataset.player = "1";
-  player1.textContent = "Player 1";
+  player1.textContent = seatLabel(state, 1);
   players.appendChild(player1);
 
   const timer = document.createElement("span");
@@ -97,10 +97,10 @@ export function initMenuBar(overlayEl, state, callbacks = {}) {
   const player2 = document.createElement("span");
   player2.className = "player-label";
   player2.dataset.player = "2";
-  player2.textContent = "Player 2";
+  player2.textContent = seatLabel(state, 2);
   players.appendChild(player2);
 
-  players.appendChild(createStatCounters(2, "bar"));
+  players.appendChild(createStatCounters(2, "bar", state));
 
   bar.appendChild(players);
   overlayEl.appendChild(bar);
@@ -139,9 +139,12 @@ export function updateMenuBar(overlayEl, state, time = performance.now()) {
  * needs `state` and a timestamp, neither of which this builder has.
  * @param {1|2} owner
  * @param {"bar"|"modal"} size
+ * @param {import("../engine/gameState.js").GameState} [state] - only needed
+ *   for the "modal" label text (see seatLabel); omit for the live bar, whose
+ *   own player-label span next to it already carries the name
  * @returns {HTMLElement}
  */
-function createStatCounters(owner, size) {
+function createStatCounters(owner, size, state) {
   const wrap = document.createElement("div");
   wrap.className = `stat-counters stat-counters--${size}`;
   wrap.dataset.player = String(owner);
@@ -149,7 +152,7 @@ function createStatCounters(owner, size) {
   if (size === "modal") {
     const label = document.createElement("span");
     label.className = "stat-counters-label";
-    label.textContent = `Player ${owner}`;
+    label.textContent = state ? seatLabel(state, owner) : `Player ${owner}`;
     wrap.appendChild(label);
   }
 
@@ -322,31 +325,105 @@ function createRulesButton(overlayEl) {
  * @param {() => void} onStart - called once the player presses "Spiel starten"
  * @returns {void}
  */
+/**
+ * Show the start modal: first a Multiplayer/Single Player choice, then -
+ * only if Single Player was picked - a bot difficulty choice (easy/medium/
+ * hard), before finally starting the match.
+ * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
+ * @param {(mode: "pvp"|"pvb", botDifficulty: "easy"|"medium"|"hard"|null) => void} onStart
+ * @returns {void}
+ */
 export function initStartModal(overlayEl, onStart) {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
 
   const modal = document.createElement("div");
   modal.className = "modal";
-
-  const title = document.createElement("h1");
-  title.className = "modal-title";
-  title.textContent = "Schiffe Versenken";
-  modal.appendChild(title);
-
-  const startBtn = document.createElement("button");
-  startBtn.type = "button";
-  startBtn.className = "btn modal-start-btn";
-  startBtn.textContent = "Spiel starten";
-  modal.appendChild(startBtn);
-
   backdrop.appendChild(modal);
   overlayEl.appendChild(backdrop);
 
-  startBtn.addEventListener("click", () => {
-    backdrop.remove();
-    onStart();
-  });
+  renderModeStep();
+
+  /** Step 1: Multiplayer starts right away, Single Player advances to the difficulty step. */
+  function renderModeStep() {
+    modal.replaceChildren();
+
+    const title = document.createElement("h1");
+    title.className = "modal-title";
+    title.textContent = "Schiffe Versenken";
+    modal.appendChild(title);
+
+    const choices = document.createElement("div");
+    choices.className = "modal-choice-row";
+    choices.appendChild(
+      createChoiceButton("Mehrspieler", () => {
+        backdrop.remove();
+        onStart("pvp", null);
+      })
+    );
+    choices.appendChild(createChoiceButton("Einzelspieler", renderDifficultyStep));
+    modal.appendChild(choices);
+  }
+
+  /** Step 2 (Single Player only): pick the bot's difficulty, or go back. */
+  function renderDifficultyStep() {
+    modal.replaceChildren();
+
+    const title = document.createElement("h1");
+    title.className = "modal-title";
+    title.textContent = "Gegnerstärke wählen";
+    modal.appendChild(title);
+
+    const choices = document.createElement("div");
+    choices.className = "modal-choice-row";
+    for (const [key, label] of [
+      ["easy", "Leicht"],
+      ["medium", "Mittel"],
+      ["hard", "Schwer"],
+    ]) {
+      choices.appendChild(
+        createChoiceButton(label, () => {
+          backdrop.remove();
+          onStart("pvb", key);
+        })
+      );
+    }
+    modal.appendChild(choices);
+
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "btn modal-back-btn";
+    back.textContent = "Zurück";
+    back.addEventListener("click", renderModeStep);
+    modal.appendChild(back);
+  }
+
+  function createChoiceButton(label, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn modal-start-btn";
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+}
+
+// Display names for the bot difficulty label shown wherever "Player 2" would
+// otherwise appear once state.mode is "pvb" (see seatLabel below).
+const BOT_DIFFICULTY_LABEL = { easy: "Leicht", medium: "Mittel", hard: "Schwer" };
+
+/**
+ * The name to show for one seat: "Player N" normally, or "Bot (<difficulty>)"
+ * for player 2 once a single-player match is running (state.mode === "pvb").
+ * @param {import("../engine/gameState.js").GameState} state
+ * @param {1|2} seat
+ * @returns {string}
+ */
+function seatLabel(state, seat) {
+  if (seat === 2 && state.mode === "pvb") {
+    return `Bot (${BOT_DIFFICULTY_LABEL[state.botDifficulty] || "?"})`;
+  }
+  return `Player ${seat}`;
 }
 
 /**
@@ -571,8 +648,10 @@ export function initShootButton(overlayEl, state) {
     unlockAudio();
 
     // Single-player: don't let the human arm shoot mode on the bot's turn -
-    // js/botController.js drives Phase.AIMING_SHOT/BLIND_SHOT itself for a
-    // bot shot, without ever pressing this button.
+    // js/botController.js resolves a bot shot straight through
+    // js/engine/actions.js's fireShot() (no blackout, no swipe - see
+    // CLAUDE.md), it never presses this button or passes through
+    // Phase.AIMING_SHOT/BLIND_SHOT at all.
     if (state.mode === "pvb" && state.currentPlayer === 2) return;
 
     if (state.phase === Phase.PLACING) {
@@ -763,7 +842,10 @@ function showVictoryScreen(overlayEl, state, callbacks) {
     hits: state.stats[winner].hits,
     durationMs,
   };
-  const { timestamp: matchTimestamp } = recordMatchResult(winner, state.stats, attempt);
+  const { timestamp: matchTimestamp } = recordMatchResult(winner, state.stats, attempt, {
+    mode: state.mode,
+    botDifficulty: state.botDifficulty,
+  });
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop victory-backdrop";
@@ -773,7 +855,7 @@ function showVictoryScreen(overlayEl, state, callbacks) {
 
   const title = document.createElement("h1");
   title.className = "modal-title";
-  title.textContent = `Player ${winner} wins!`;
+  title.textContent = `${seatLabel(state, winner)} wins!`;
   modal.appendChild(title);
 
   if (state.matchStartTime !== null && state.matchEndTime !== null) {
@@ -785,8 +867,8 @@ function showVictoryScreen(overlayEl, state, callbacks) {
 
   const statsRow = document.createElement("div");
   statsRow.className = "victory-stats";
-  statsRow.appendChild(createStatCounters(1, "modal"));
-  statsRow.appendChild(createStatCounters(2, "modal"));
+  statsRow.appendChild(createStatCounters(1, "modal", state));
+  statsRow.appendChild(createStatCounters(2, "modal", state));
   modal.appendChild(statsRow);
   // `time` is irrelevant here - state.matchEndTime is already set by this
   // point, so computeScore() ignores it and returns each player's frozen
@@ -804,9 +886,60 @@ function showVictoryScreen(overlayEl, state, callbacks) {
     // ".victory-backdrop" element - removing this one now would pop the round
     // summary right back up on top of the high-score screen next frame.
     backdrop.style.display = "none";
-    showHighScoresScreen(overlayEl, attempt, matchTimestamp, callbacks);
+    // Solo (vs-bot) results have their own record, kept separate from the
+    // PvP "Top Scores" ranking - see leaderboardStore.js's `vsBot`.
+    if (state.mode === "pvb") showSoloResultScreen(overlayEl, state, callbacks);
+    else showHighScoresScreen(overlayEl, attempt, matchTimestamp, callbacks);
   });
   modal.appendChild(continueBtn);
+
+  backdrop.appendChild(modal);
+  overlayEl.appendChild(backdrop);
+}
+
+/**
+ * Show the post-game screen for a single-player match, reached by pressing
+ * Continue on the victory screen: just the human's all-time record against
+ * this bot difficulty (js/data/leaderboardStore.js's `vsBot`, kept separate
+ * from the PvP "Top Scores" ranking - see showHighScoresScreen) and a
+ * Rematch button. Pressing Rematch here is what actually starts the next
+ * match, same as showHighScoresScreen's.
+ * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
+ * @param {import("../engine/gameState.js").GameState} state
+ * @param {{onRematch?: () => void}} callbacks
+ * @returns {void}
+ */
+function showSoloResultScreen(overlayEl, state, callbacks) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop high-scores-backdrop";
+
+  const modal = document.createElement("div");
+  modal.className = "modal";
+
+  const title = document.createElement("h1");
+  title.className = "modal-title";
+  title.textContent = "Round Summary";
+  modal.appendChild(title);
+
+  const record = loadLeaderboard().vsBot[state.botDifficulty] || { gamesPlayed: 0, wins: 0, losses: 0 };
+  const note = document.createElement("p");
+  note.className = "leaderboard-note";
+  note.textContent =
+    `Vs. ${BOT_DIFFICULTY_LABEL[state.botDifficulty] || "Bot"}: ` +
+    `${record.wins} win${record.wins === 1 ? "" : "s"} / ${record.losses} loss${record.losses === 1 ? "" : "es"} ` +
+    `(${record.gamesPlayed} played)`;
+  modal.appendChild(note);
+
+  const rematchBtn = document.createElement("button");
+  rematchBtn.type = "button";
+  rematchBtn.className = "btn modal-start-btn";
+  rematchBtn.textContent = "Rematch";
+  rematchBtn.addEventListener("click", () => {
+    backdrop.remove();
+    overlayEl.querySelector(".victory-backdrop")?.remove(); // the hidden round-summary screen (see showVictoryScreen's Continue handler)
+    if (callbacks.onRematch) callbacks.onRematch();
+  });
+  modal.appendChild(rematchBtn);
 
   backdrop.appendChild(modal);
   overlayEl.appendChild(backdrop);

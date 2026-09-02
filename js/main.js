@@ -2,12 +2,14 @@
 //
 // Bootstrap: sets up the canvas, handles resizing, creates the single game
 // state instance, and starts a render loop driven by js/render/renderer.js.
-// Once the player presses "Spiel starten", loads the island library,
-// generates a map, spawns both base ships at their fixed start positions,
-// and wires up freehand drag-path ship placement (js/input.js). This file
-// holds the project's one allowed global: `state`.
+// Once the player picks Multiplayer or Single Player (+ bot difficulty) on
+// the start modal, loads the island library, generates a map, spawns both
+// base ships at their fixed start positions, and wires up freehand
+// drag-path ship placement (js/input.js) plus, for single-player, the bot's
+// own turn-taking (js/botController.js). This file holds the project's one
+// allowed global: `state`.
 
-import { createGameState, setIslandLibrary, setMap, addShip, startMatchClock } from "./engine/gameState.js";
+import { createGameState, setIslandLibrary, setMap, addShip, startMatchClock, setMatchMode } from "./engine/gameState.js";
 import {
   initMenuBar,
   initPlacementConfirmUI,
@@ -26,6 +28,7 @@ import { restartGame } from "./engine/actions.js";
 import { BASE_SHIP_START } from "./engine/rules.js";
 import { render } from "./render/renderer.js";
 import { initInput } from "./input.js";
+import { initBotController } from "./botController.js";
 
 const canvas = document.getElementById("game-canvas");
 const ctx = canvas.getContext("2d");
@@ -39,18 +42,28 @@ const state = createGameState();
 // restart (see startMatch()/restartMatch() below).
 let inputHandle = null;
 
-// Game UI (menu bar) and the match itself only start once the player
-// presses "Spiel starten" on the start modal shown at page load.
-initStartModal(uiOverlay, () => {
-  startMatch();
+// Handle returned by js/botController.js once a single-player match starts
+// (state.mode === "pvb"); null in a PvP match. update() is polled every
+// frame from gameLoop(), same as the UI's own per-frame sync calls.
+let botHandle = null;
+
+// Game UI (menu bar) and the match itself only start once the player picks
+// Multiplayer/Single Player (and, for Single Player, a bot difficulty) on
+// the start modal shown at page load.
+initStartModal(uiOverlay, (mode, botDifficulty) => {
+  startMatch(mode, botDifficulty);
 });
 
 /**
  * Load the island library, generate a random map, spawn both players' base
- * ships at their fixed start positions, and wire up ship-placement input.
+ * ships at their fixed start positions, and wire up ship-placement input
+ * (plus the bot's own turn-taking, for a single-player match).
+ * @param {"pvp"|"pvb"} mode
+ * @param {"easy"|"medium"|"hard"|null} botDifficulty
  * @returns {Promise<void>}
  */
-async function startMatch() {
+async function startMatch(mode, botDifficulty) {
+  setMatchMode(state, mode, botDifficulty);
   setIslandLibrary(state, await loadIslandLibrary());
 
   const seed = Math.floor(Math.random() * 2 ** 31);
@@ -61,11 +74,13 @@ async function startMatch() {
   initMenuBar(uiOverlay, state, { onRestart: () => restartMatch() });
   initShootButton(uiOverlay, state);
   initShootUI(uiOverlay);
-  inputHandle = initInput(canvas, state, () => {
+  const onTurnChanged = () => {
     updateMenuBar(uiOverlay, state);
     updateShootButton(uiOverlay, state);
-  });
+  };
+  inputHandle = initInput(canvas, state, onTurnChanged);
   initPlacementConfirmUI(uiOverlay, () => inputHandle.revertPendingPlacement());
+  botHandle = state.mode === "pvb" ? initBotController(state, onTurnChanged) : null;
 }
 
 /**
@@ -79,6 +94,7 @@ function restartMatch() {
   restartGame(state);
   startMatchClock(state, performance.now());
   if (inputHandle) inputHandle.cancelPendingPlacementTimer();
+  if (botHandle) botHandle.reset();
   state.dragPath = null;
   state.pendingPlacement = null;
   state.shotLine = null;
@@ -141,6 +157,7 @@ function gameLoop(time) {
     updateMenuBar(uiOverlay, state, time); // keeps each stat bubble's live score (see js/engine/scoring.js) ticking every frame
     updateShootUI(uiOverlay, state, time, { onRematch: () => restartMatch() });
     updatePlacementConfirmUI(uiOverlay, state, cssWidth, cssHeight);
+    if (botHandle) botHandle.update(time);
   }
 
   requestAnimationFrame(gameLoop);
