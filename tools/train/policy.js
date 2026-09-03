@@ -41,11 +41,47 @@ import { hitProbability, sampleCandidateEndpoints, buildPlacementPath } from "..
 export const AIM_ERROR_DEG = 9;
 export const DISTANCE_ERROR_FACTOR = 0.12;
 
+/**
+ * Default accuracy profile: "I assume the enemy aims about as well as I
+ * do." decideMove() takes myAccuracy/enemyAccuracy overrides so training
+ * can diverge them - see evolve.js's SHARP_ACCURACY, used to give the
+ * population real, repeated pressure from a sharper-than-medium shooter
+ * without changing the trained bot's OWN shooting skill (myAccuracy stays
+ * at this default; only what a genome assumes about the ENEMY's accuracy,
+ * and the actual accuracy of the fixed sharp opponent it's trained
+ * against, change).
+ */
+const DEFAULT_ACCURACY = { aimErrorDeg: AIM_ERROR_DEG, distanceErrorFactor: DISTANCE_ERROR_FACTOR };
+
 const PLACEMENT_CANDIDATE_COUNT = 30;
 const PLACEMENT_CANDIDATES_TO_TRY = 8;
 
 /** Hitbox radius to assume for a ship that doesn't exist yet (a placement candidate point), same as js/engine/bot.js's NORMAL_SHIP_HIT_RADIUS. */
 const NORMAL_SHIP_HIT_RADIUS = shipHitRadius({ isBase: false });
+
+/**
+ * Fixed (not evolved) steepness of the defense-mode transition around
+ * genome.criticalDistance - see dangerLevel(). Kept fixed rather than also
+ * evolved so the search only has to find WHERE the switch sits, not also
+ * how sharp it is; 15 makes it transition from ~10% to ~90% over roughly
+ * 0.15 units of distance, sharp enough to read as a real mode change
+ * rather than the old smooth, always-a-little-active ramp.
+ */
+const URGENCY_STEEPNESS = 15;
+
+/**
+ * How much "defense mode" should be in effect (0-1) given how close the
+ * single worst threat already is to our base - a smooth step centered on
+ * genome.criticalDistance, not a hard cutoff (so the search stays
+ * differentiable/rankable rather than having a cliff), but sharp enough
+ * to behave like a real switch: near 0 well before the threshold, near 1
+ * well past it. This is the "try different thresholds for how close an
+ * attacker can get before defense sets in" trigger - evolution searches
+ * over WHERE genome.criticalDistance sits, rather than a hand-picked guess.
+ */
+function dangerLevel(currentClosestDist, genome) {
+  return 1 / (1 + Math.exp(URGENCY_STEEPNESS * (currentClosestDist - genome.criticalDistance)));
+}
 
 /**
  * @typedef {Object} Genome
@@ -96,6 +132,14 @@ const NORMAL_SHIP_HIT_RADIUS = shipHitRadius({ isBase: false });
  *   among two spots with an equally good shot lined up, the one less
  *   likely to get hit first scores higher, while still requiring the
  *   target stay in range at all.
+ * @property {number} criticalDistance - the distance-to-base at which
+ *   "defense mode" (see dangerLevel()) is half-on: well above this, danger
+ *   is ~0 and urgencyBonus/defensiveSetup/shieldValue barely matter, and
+ *   advancing is at full strength; well below it, danger is ~1, advancing
+ *   is nearly suppressed, and all three defensive terms are at full
+ *   strength. This is what actually answers "how close before the bot
+ *   switches to defending" - evolution searches over where to put it
+ *   rather than it being a hand-picked constant.
  */
 
 /**
@@ -103,11 +147,23 @@ const NORMAL_SHIP_HIT_RADIUS = shipHitRadius({ isBase: false });
  * @param {import("../../js/engine/gameState.js").GameState} state
  * @param {1|2} owner
  * @param {Genome} genome
+ * @param {{myAccuracy?: {aimErrorDeg:number,distanceErrorFactor:number}, enemyAccuracy?: {aimErrorDeg:number,distanceErrorFactor:number}}} [options] -
+ *   myAccuracy governs this player's own shots (defaults to the fixed
+ *   "medium" DEFAULT_ACCURACY - the trained bot's real shooting skill,
+ *   never evolved); enemyAccuracy governs what this player ASSUMES the
+ *   opponent's accuracy is, used only for threat perception (exposure,
+ *   shieldValue) - defaults to myAccuracy ("assume the enemy aims about as
+ *   well as I do"). Letting these diverge is how training can apply real,
+ *   sharper-than-medium pressure (see evolve.js's SHARP_ACCURACY) without
+ *   changing what accuracy the trained bot actually ships with.
  * @returns {{type:"shoot", originShip, target, direction:[number,number], speed:number}
  *          |{type:"place", path:Array<{x:number,y:number}>}
  *          |null} null only when there is truly no legal move at all
  */
-export function decideMove(state, owner, genome) {
+export function decideMove(state, owner, genome, options = {}) {
+  const myAccuracy = options.myAccuracy || DEFAULT_ACCURACY;
+  const enemyAccuracy = options.enemyAccuracy || myAccuracy;
+
   const ownShips = getShipsByOwner(state, owner);
   if (ownShips.length === 0) return null;
 
@@ -119,12 +175,12 @@ export function decideMove(state, owner, genome) {
   const islandWorldShapes = getPlacedIslandWorldShapes(state.islands, state.map);
   const mountainShapes = islandWorldShapes.flatMap((island) => island.mountainShapes);
 
-  const bestShot = bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes, genome);
-  const bestPlacement = bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes, genome);
+  const bestShot = bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes, genome, myAccuracy);
+  const bestPlacement = bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes, genome, myAccuracy, enemyAccuracy);
 
-  if (bestShot && (!bestPlacement || bestShot.score >= bestPlacement.score)) return toShootMove(bestShot);
+  if (bestShot && (!bestPlacement || bestShot.score >= bestPlacement.score)) return toShootMove(bestShot, myAccuracy);
   if (bestPlacement) return { type: "place", path: bestPlacement.path };
-  if (bestShot) return toShootMove(bestShot); // no legal placement at all - still take the shot rather than pass
+  if (bestShot) return toShootMove(bestShot, myAccuracy); // no legal placement at all - still take the shot rather than pass
   return null;
 }
 
@@ -139,13 +195,13 @@ export function decideMove(state, owner, genome) {
  * enemy ship already sits (that's what the distance becomes once the
  * closest one is gone).
  */
-function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes, genome) {
+function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes, genome, myAccuracy) {
   if (enemyShips.length === 0) return null;
 
   let closestShip = null;
   let currentClosestDist = 0;
   let nextClosestDist = 0;
-  let urgency = 0;
+  let danger = 0;
   if (myBase) {
     const sorted = [...enemyShips].sort((a, b) => distance(a, myBase) - distance(b, myBase));
     closestShip = sorted[0];
@@ -153,11 +209,7 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes,
     // No second-closest ship to "fall back to" - leave the delta at 0
     // rather than treating it as infinitely far away.
     nextClosestDist = sorted.length > 1 ? distance(sorted[1], myBase) : currentClosestDist;
-    // How dangerously close the single worst threat already is - map
-    // coordinates are 0-1, so "1 - distance" needs no extra hand-picked
-    // threshold: an enemy already on top of our base scores urgency 1, one
-    // at the far corner of the map scores ~0.
-    urgency = Math.max(0, 1 - currentClosestDist);
+    danger = dangerLevel(currentClosestDist, genome);
   }
 
   let best = null;
@@ -166,7 +218,7 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes,
       const d = distance(originShip, target);
       if (d > MAX_SHOT_DISTANCE) continue; // the real physical shot range (rules.js), not a subjective willingness cutoff
       const blockingShips = state.ships.filter((s) => s.id !== originShip.id && s.id !== target.id);
-      const pHit = hitProbability(originShip, target, shipHitRadius(target), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+      const pHit = hitProbability(originShip, target, shipHitRadius(target), myAccuracy.aimErrorDeg, myAccuracy.distanceErrorFactor, mountainShapes, blockingShips);
       if (pHit <= 0) continue;
 
       const isClosestThreat = closestShip && target.id === closestShip.id;
@@ -181,7 +233,7 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes,
       // (evolution needs to be able to value "attempt a desperate defense"
       // and "land an actual defensive kill" differently, not just scale
       // together).
-      const urgencyBonus = isClosestThreat ? genome.urgency * urgency : 0;
+      const urgencyBonus = isClosestThreat ? genome.urgency * danger : 0;
       const score = pHit * (killValue + defenseValue) + urgencyBonus;
 
       if (!best || score > best.score) best = { originShip, target, pHit, distance: d, score };
@@ -205,7 +257,7 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes,
  * home territory instead of advancing at all, could never outscore just
  * standing pat or advancing in a straight line.
  */
-function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes, genome) {
+function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes, genome, myAccuracy, enemyAccuracy) {
   if (!enemyBase) return null;
   const currentMinDist = Math.min(...ownShips.map((s) => distance(s, enemyBase)));
 
@@ -216,11 +268,13 @@ function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, 
   let closestThreat = null;
   let currentClosestThreatDist = 0;
   let nextClosestThreatDist = 0;
+  let danger = 0;
   if (myBase && enemyShips.length > 0) {
     const sorted = [...enemyShips].sort((a, b) => distance(a, myBase) - distance(b, myBase));
     closestThreat = sorted[0];
     currentClosestThreatDist = distance(closestThreat, myBase);
     nextClosestThreatDist = sorted.length > 1 ? distance(sorted[1], myBase) : currentClosestThreatDist;
+    danger = dangerLevel(currentClosestThreatDist, genome);
   }
 
   const raw = sampleCandidateEndpoints(state, ownShips, islandWorldShapes, PLACEMENT_CANDIDATE_COUNT);
@@ -229,7 +283,7 @@ function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, 
   const scored = raw
     .map((c) => {
       const progress = currentMinDist - distance(c.point, enemyBase);
-      const { exposure, opportunity } = placementRiskAndOpportunity(state, c.point, enemyShips, mountainShapes);
+      const { exposure, opportunity } = placementRiskAndOpportunity(state, c.point, enemyShips, mountainShapes, myAccuracy, enemyAccuracy);
       // A setup only pays off if the ship survives the enemy's next turn to
       // actually take the shot - discount it by the enemy's own best odds
       // of sinking it first (1 - exposure = our estimated survival chance),
@@ -245,12 +299,15 @@ function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, 
       // genome.defense - this is "how eager am I to set up a shot on the
       // threat before it's even landed," the same category of prospective/
       // uncertain defense as urgencyBonus above, not the realized payoff.
+      // Also scaled by `danger` (see dangerLevel()) - a defensive setup
+      // matters most exactly when the threat has actually crossed into
+      // "close enough to worry about" territory.
       let defensiveSetup = 0;
       if (closestThreat) {
         const blockingShips = state.ships.filter((s) => s.id !== closestThreat.id);
-        const pHitClosestThreat = hitProbability(c.point, closestThreat, shipHitRadius(closestThreat), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+        const pHitClosestThreat = hitProbability(c.point, closestThreat, shipHitRadius(closestThreat), myAccuracy.aimErrorDeg, myAccuracy.distanceErrorFactor, mountainShapes, blockingShips);
         const distanceGained = Math.max(0, nextClosestThreatDist - currentClosestThreatDist);
-        defensiveSetup = pHitClosestThreat * genome.urgency * distanceGained * (1 - exposure);
+        defensiveSetup = pHitClosestThreat * genome.urgency * distanceGained * (1 - exposure) * danger;
       }
 
       // Shield: a shot stops at the first thing it hits (rules.js's
@@ -268,13 +325,20 @@ function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, 
       let shieldValue = 0;
       if (myBase && closestThreat) {
         const baseBlockingShips = state.ships.filter((s) => s.id !== closestThreat.id && s.id !== myBase.id);
-        const threatWithoutNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, baseBlockingShips);
+        const threatWithoutNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), enemyAccuracy.aimErrorDeg, enemyAccuracy.distanceErrorFactor, mountainShapes, baseBlockingShips);
         const hypotheticalShip = { x: c.point.x, y: c.point.y, isBase: false };
-        const threatWithNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, [...baseBlockingShips, hypotheticalShip]);
-        shieldValue = Math.max(0, threatWithoutNewShip - threatWithNewShip) * genome.urgency;
+        const threatWithNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), enemyAccuracy.aimErrorDeg, enemyAccuracy.distanceErrorFactor, mountainShapes, [...baseBlockingShips, hypotheticalShip]);
+        shieldValue = Math.max(0, threatWithoutNewShip - threatWithNewShip) * genome.urgency * danger;
       }
 
-      const score = genome.advance * progress - genome.safety * exposure + genome.setup * survivalWeightedOpportunity + defensiveSetup + shieldValue;
+      // "Attack if no direct danger, defend if it's imminent": advancing
+      // toward the enemy base is suppressed as danger rises, so a
+      // placement pulling a ship AWAY from a real threat to keep pushing
+      // forward stops looking attractive once defense mode is on - the
+      // defensive terms above are picking up the slack in that regime
+      // instead. Untouched at danger=0 (normal play), progress can't help
+      // a candidate at all once danger=1.
+      const score = genome.advance * progress * (1 - danger) - genome.safety * exposure + genome.setup * survivalWeightedOpportunity + defensiveSetup + shieldValue;
       return { ...c, score };
     })
     .sort((a, b) => b.score - a.score)
@@ -300,45 +364,44 @@ function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, 
  *     safety*exposure), so it stays on the same scale as every other term
  *     instead of double-counting a kill's value once as "the shot" and
  *     again as "the setup for the shot".
- * Both reuse this policy's own fixed AIM_ERROR_DEG/DISTANCE_ERROR_FACTOR as
- * the assumed enemy accuracy too (rather than inventing a separate assumed-
- * enemy-accuracy constant, which is exactly the kind of hand-picked
- * threshold this rewrite was meant to get rid of) - "assume the enemy aims
- * about as well as we do" is a reasonable, parameter-free stand-in.
+ * threatToUs uses enemyAccuracy (it's the enemy's shot at us - what we
+ * assume their accuracy is, defaulting to "about as well as we do" unless
+ * training overrides it, see decideMove()); shotFromUs uses myAccuracy
+ * (it's our own shot at them - our real, fixed shooting skill).
  */
-function placementRiskAndOpportunity(state, point, enemyShips, mountainShapes) {
+function placementRiskAndOpportunity(state, point, enemyShips, mountainShapes, myAccuracy, enemyAccuracy) {
   let exposure = 0;
   let opportunity = 0;
   for (const enemy of enemyShips) {
     const blockingShips = state.ships.filter((s) => s.id !== enemy.id);
 
-    const threatToUs = hitProbability(enemy, point, NORMAL_SHIP_HIT_RADIUS, AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+    const threatToUs = hitProbability(enemy, point, NORMAL_SHIP_HIT_RADIUS, enemyAccuracy.aimErrorDeg, enemyAccuracy.distanceErrorFactor, mountainShapes, blockingShips);
     if (threatToUs > exposure) exposure = threatToUs;
 
-    const shotFromUs = hitProbability(point, enemy, shipHitRadius(enemy), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+    const shotFromUs = hitProbability(point, enemy, shipHitRadius(enemy), myAccuracy.aimErrorDeg, myAccuracy.distanceErrorFactor, mountainShapes, blockingShips);
     if (shotFromUs > opportunity) opportunity = shotFromUs;
   }
   return { exposure, opportunity };
 }
 
-function toShootMove(candidate) {
-  const { direction, speed } = aimAt(candidate.originShip, candidate.target, candidate.distance);
+function toShootMove(candidate, myAccuracy) {
+  const { direction, speed } = aimAt(candidate.originShip, candidate.target, candidate.distance, myAccuracy);
   return { type: "shoot", originShip: candidate.originShip, target: candidate.target, direction, speed };
 }
 
 /**
  * True direction/distance to the target, turned into a noisy swipe using
- * this policy's fixed accuracy - mirrors js/engine/bot.js's aimAt()/
- * distanceToSwipeSpeed() exactly (kept as a small local copy rather than an
- * import, since it's a few lines and bot.js's version is difficulty-shaped).
+ * `accuracy` - mirrors js/engine/bot.js's aimAt()/distanceToSwipeSpeed()
+ * exactly (kept as a small local copy rather than an import, since it's a
+ * few lines and bot.js's version is difficulty-shaped).
  */
-function aimAt(originShip, target, trueDistance) {
+function aimAt(originShip, target, trueDistance, accuracy) {
   const trueAngle = Math.atan2(target.y - originShip.y, target.x - originShip.x);
-  const angleNoise = ((AIM_ERROR_DEG * Math.PI) / 180) * (Math.random() * 2 - 1);
+  const angleNoise = ((accuracy.aimErrorDeg * Math.PI) / 180) * (Math.random() * 2 - 1);
   const angle = trueAngle + angleNoise;
   const direction = [Math.cos(angle), Math.sin(angle)];
 
-  const distanceNoise = 1 + DISTANCE_ERROR_FACTOR * (Math.random() * 2 - 1);
+  const distanceNoise = 1 + accuracy.distanceErrorFactor * (Math.random() * 2 - 1);
   const desiredDistance = clamp(trueDistance * distanceNoise, MIN_SHOT_DISTANCE, MAX_SHOT_DISTANCE);
   const t = (desiredDistance - MIN_SHOT_DISTANCE) / (MAX_SHOT_DISTANCE - MIN_SHOT_DISTANCE);
   const speed = MIN_SWIPE_SPEED + clamp(t, 0, 1) * (MAX_SWIPE_SPEED - MIN_SWIPE_SPEED);

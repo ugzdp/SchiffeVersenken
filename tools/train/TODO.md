@@ -309,6 +309,83 @@ turned down to the quick-run scale) on this same `shield`-enabled formula
 might find something meaningfully better still. Reasonable next step
 whenever there's appetite for another multi-hour run.
 
+## 12. `criticalDistance` - real "defense mode" threshold (in progress)
+User feedback: even with shield/urgency/defensiveSetup, the bot still
+placed elsewhere with a visible attacker near the base - the continuous,
+always-a-little-active urgency signal wasn't decisive enough. Explicit ask:
+try actual thresholds for "how close before defense sets in."
+
+Implemented `dangerLevel(currentClosestDist, genome)` in `policy.js`: a
+smooth-but-sharp sigmoid switch (fixed steepness=15, not evolved) centered
+on a new evolvable `genome.criticalDistance` - this IS the "try different
+thresholds" ask, just searched by evolution instead of hand-picked. Applied
+consistently: `urgencyBonus` uses it instead of the old linear ramp;
+`defensiveSetup`/`shieldValue` are now multiplied by it (near-zero when
+danger is low, full strength once past the threshold); `advance * progress`
+in placement scoring is now multiplied by `(1 - danger)`, so advancing is
+suppressed once defense mode is on - the "attack if safe, defend if not"
+split the user asked for. 8th genome variable; `evolve.js` given
+per-gene bounds (`criticalDistance` clamped to [0.05, 1.4], a distance
+range, unlike every other weight-style gene) since the default [0.1, 2000]
+range is nonsensical for a distance parameter.
+
+Smoke-tested clean (0/10 stalemates). Launched at population 24/150
+generations (~45-75 min estimate) - moderate scale, not the full 28/300
+marathon, since this is exploring a genuinely new mechanism and a first
+pass should confirm the approach works before spending marathon-length
+compute on it. Validate the same way as every prior candidate:
+`compareVsShipped.js` AND a direct head-to-head against the currently-
+shipped bot (the shield-only version) - direct competition is what's
+actually decided every previous baking-in choice.
+
+## 13. Sharp-opponent training pressure (in progress)
+User feedback: increase defense relevance further, and specifically -
+"increase the precision of the opponent... an opponent scores more often
+and has less misses." Real architectural addition, not just a weight
+change: `policy.js`'s `decideMove()` now takes `{myAccuracy, enemyAccuracy}`
+- myAccuracy governs a player's own shots (defaults to the fixed "medium"
+accuracy the shipped bot always uses), enemyAccuracy governs what that
+player ASSUMES about the opponent's accuracy for its own exposure/
+shieldValue threat perception (defaults to myAccuracy - "assume the enemy
+aims about as well as I do", the prior behavior). Threaded through every
+hitProbability() call site, correctly split by whose shot each one
+represents (my shot at them vs. their shot at me).
+
+`evolve.js` now plays each genome, every generation, against a fixed
+sharp-shooting reference (`SHARP_ACCURACY`: 3deg/3%, tighter than
+js/engine/bot.js's "hard") on top of its normal peer opponents - crucially,
+folded into the SAME scores/avgMargin that drives selection, not just the
+separate benchmark check, so it actually pressures evolution rather than
+just being logged. The genome's own shooting skill is untouched (still
+"medium") - only what it assumes about a sharp enemy, and the real accuracy
+of this specific training opponent, are sharper.
+
+Verified end-to-end before running: same genome vs. itself, symmetric
+accuracy → 12/8 (even, as expected); same genome vs. itself with one side
+sharp → 18/1 in the sharp side's favor - confirms the accuracy split
+actually changes real outcomes, not just internal bookkeeping.
+
+Launched at population 24 / 150 generations (same scale as run #12, now
+~1.8h given the added games). Validate the same way as always -
+`compareVsShipped.js` AND a direct head-to-head against the currently-
+shipped bot (still the shield+criticalDistance-only version - #12's result
+was reported to the user but NOT baked in yet, pending this run).
+
+## 14. Baked in: criticalDistance + sharp-opponent-trained genome
+Both item #12 (criticalDistance) and #13 (sharp-opponent training) are now
+in `js/engine/trainedBot.js`: `dangerLevel()` ported (identical to
+`policy.js`'s, just without the myAccuracy/enemyAccuracy parameters, which
+are training-only), `TRAINED_GENOME` updated to the sharp-opponent-trained
+genome (8 variables now, including `criticalDistance: 0.22`). Re-verified
+directly through the shipped file: 56/60 (93.3%) vs `js/engine/bot.js`
+medium, 0 draws, avg 35.8 turns - consistent with training-side numbers.
+Pre-existing `js/engine/tests.js` failures (2, unrelated) unchanged.
+
+Remember: this is still local only. Per the user's established workflow,
+someone with push access (this sandbox's git credentials don't have it)
+needs to `git push origin main` for GitHub Pages / the iPad build to pick
+it up.
+
 ## Possible follow-ups (not started - only pursue if time remains after 1-5)
 - Multi-turn lookahead is still the fundamental limitation noted earlier
   (a sacrifice that only pays off several turns later is invisible to a

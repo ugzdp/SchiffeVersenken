@@ -59,6 +59,62 @@ with an equally good shot lined up, the safer one wins - while a spot that
 loses the target out of range entirely still scores zero setup value
 regardless of how safe it is.
 
+## `criticalDistance` and `dangerLevel()` - a real defense-mode switch
+
+Playtesting: even with `shieldValue`, the bot still placed elsewhere with a
+visible attacker near the base - the continuous, always-a-little-active
+`urgency` ramp wasn't decisive enough. `dangerLevel(currentClosestDist,
+genome)` replaces it with a sharp (steepness fixed at 15, not evolved)
+sigmoid centered on the evolvable `criticalDistance` - "try different
+thresholds for how close before defense sets in," done by the search
+instead of a hand-picked guess. Applied uniformly: `urgencyBonus` uses it
+directly; `defensiveSetup`/`shieldValue` are multiplied by it (near-zero
+below the threshold, full strength past it); `advance * progress` in
+placement scoring is multiplied by `(1 - danger)`, suppressing advancing
+once defense mode is on. `criticalDistance` gets its own bounds in
+`evolve.js` (`GENE_BOUNDS`) since it's a distance (0-1ish), not a weight
+like every other gene - the default range would let it drift somewhere
+meaningless.
+
+## Sharp-opponent training pressure
+
+Related follow-up ask: make defense matter in practice, not just in
+principle - "increase the precision of the opponent." Self-play alone
+under-selects for defense because every population member shares the same
+"medium" accuracy, so incoming shots miss often regardless of positioning.
+`decideMove()` now takes an optional `{myAccuracy, enemyAccuracy}`:
+`myAccuracy` governs a player's own shots (defaults to the fixed medium
+`DEFAULT_ACCURACY` - the trained bot's real, unchanged shooting skill);
+`enemyAccuracy` governs what that player *assumes* about the opponent's
+accuracy, used only for threat perception (`exposure`, `shieldValue`) -
+defaults to `myAccuracy` ("assume the enemy aims about as well as I do",
+the original behavior). Every `hitProbability()` call site was audited and
+split by which accuracy it actually represents (an own-shot call uses
+`myAccuracy`; an enemy-shot-at-us call uses `enemyAccuracy`).
+
+`evolve.js`'s `SHARP_ACCURACY` (3°/3% - tighter than `js/engine/bot.js`'s
+"hard") is used for `SHARP_OPPONENT_GAMES_PER_GENOME` extra games every
+generation, each genome vs. the fixed `BENCHMARK_GENOME` shooting with real
+`SHARP_ACCURACY` (not just perceived) - folded into the SAME
+`scores`/`avgMargin` that drives selection, not just the separate benchmark
+check, so it actually shapes evolution rather than only being logged. The
+genome's own shooting skill is never touched by this - only what it
+assumes about a sharp enemy, and the real accuracy of this specific
+training opponent.
+
+Verified end-to-end before trusting it: same genome vs. itself with
+symmetric accuracy → roughly even; same genome with one side given
+`SHARP_ACCURACY` → dramatically lopsided in the sharp side's favor -
+confirming the split actually changes real outcomes, not just internal
+bookkeeping.
+
+Note `js/engine/trainedBot.js` does NOT carry any of this
+myAccuracy/enemyAccuracy machinery - it's training-only. The shipped bot
+always uses its own fixed accuracy symmetrically for both its own shots
+and its threat perception, exactly as before; it only benefits from having
+been *selected* by a search that rewarded defending well against a
+genuinely sharp opponent.
+
 ## Two separate scoring systems, on purpose
 
 `simulate.js`'s `FITNESS` constants and `policy.js`'s `Genome` look like the

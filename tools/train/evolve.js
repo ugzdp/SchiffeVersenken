@@ -24,12 +24,13 @@ import { MAX_TURNS, playMatch } from "./simulate.js";
 // ---------------------------------------------------------------------------
 // Knobs
 // ---------------------------------------------------------------------------
-// Scaled WAY down for a quick ~10 minute sanity check of the new `shield`
-// mechanism (see policy.js) - not a real search. Raise these back up
-// (28/300 was the last "real" scale used) once this looks directionally
-// promising and is worth a proper multi-hour run.
-const POPULATION_SIZE = 16;
-const GENERATIONS = 25;
+// Moderate scale for this run: exploring a genuinely new mechanism
+// (criticalDistance, the "how close before defense mode switches on"
+// threshold - see policy.js's dangerLevel()) needs enough generations to
+// actually let that value settle somewhere meaningful, but this doesn't
+// need the full 28/300 marathon scale on the first pass.
+const POPULATION_SIZE = 24;
+const GENERATIONS = 150;
 const OPPONENTS_PER_GENOME = 6; // sampled from the same generation, not a full round-robin (keeps cost linear in population size)
 const GAMES_PER_OPPONENT = 3; // alternating sides, to cancel out any first-move edge
 const ELITE_COUNT = 3; // top genomes carried into the next generation unchanged
@@ -56,9 +57,19 @@ const BENCHMARK_GAMES = 40;
 // this file has ever printed - reusing a stale genome's raw numbers across
 // a formula change has already caused one near-coin-flip collapse (see
 // tools/train/TODO.md item 3).
-const SEED_GENOME = { hitShip: 9.6, hitBase: 70.0, advance: 105.2, defense: 3.3, urgency: 9.5, safety: 33.9, setup: 86.0 };
+const SEED_GENOME = { hitShip: 9.6, hitBase: 70.0, advance: 105.2, defense: 3.3, urgency: 9.5, safety: 33.9, setup: 86.0, criticalDistance: 0.4 };
 const MIN_GENE = 0.1;
 const MAX_GENE = 2000;
+
+// criticalDistance is a distance (0-1 map scale, occasionally up to ~1.4 -
+// see policy.js's dangerLevel()), not a weight like every other gene - the
+// default [MIN_GENE, MAX_GENE] range is nonsensical for it (2000 would mean
+// "defense mode never turns off", wasting search effort in a degenerate
+// region). Per-gene override, looked up by boundsFor() in jitter()/mutate().
+const GENE_BOUNDS = { criticalDistance: [0.05, 1.4] };
+function boundsFor(key) {
+  return GENE_BOUNDS[key] || [MIN_GENE, MAX_GENE];
+}
 
 // A frozen copy of SEED_GENOME, NEVER mutated and never part of the
 // evolving population - a fixed yardstick to measure real progress
@@ -70,33 +81,46 @@ const MAX_GENE = 2000;
 // the number that actually answers "is training working".
 const BENCHMARK_GENOME = { ...SEED_GENOME };
 
+// User feedback: the bot didn't take defense seriously enough with a
+// visible attacker nearby - part of the fix is criticalDistance above, but
+// another part is that self-play alone doesn't create much PRESSURE to
+// defend well, since every population member shares the same "medium"
+// accuracy (9deg/12%) and therefore misses often regardless of positioning.
+// SHARP_ACCURACY is a fixed, much tighter accuracy used ONLY for a portion
+// of each genome's training opponents (see SHARP_OPPONENT_GAMES_PER_GENOME
+// below) - real pressure from an opponent that actually lands its shots,
+// without changing the genome's OWN shooting skill (myAccuracy stays at
+// policy.js's DEFAULT_ACCURACY for every genome; only what a genome
+// ASSUMES about a sharp enemy, and the opponent's own real accuracy in
+// these specific training games, change - see policy.js's decideMove()).
+// Tighter than js/engine/bot.js's "hard" preset (4.5deg/5.5%), since "hard"
+// is itself just a difficulty label, not a ceiling on how good an opponent
+// (or a skilled human) could be.
+const SHARP_ACCURACY = { aimErrorDeg: 3, distanceErrorFactor: 0.03 };
+const SHARP_OPPONENT_GAMES_PER_GENOME = 4; // alternating sides, added on top of OPPONENTS_PER_GENOME's peer games
+
 // ---------------------------------------------------------------------------
 // Genome helpers
 // ---------------------------------------------------------------------------
 
 function randomGenome() {
-  return {
-    hitShip: jitter(SEED_GENOME.hitShip, 3),
-    hitBase: jitter(SEED_GENOME.hitBase, 3),
-    advance: jitter(SEED_GENOME.advance, 3),
-    defense: jitter(SEED_GENOME.defense, 3),
-    urgency: jitter(SEED_GENOME.urgency, 3),
-    safety: jitter(SEED_GENOME.safety, 3),
-    setup: jitter(SEED_GENOME.setup, 3),
-  };
+  const genome = {};
+  for (const key of Object.keys(SEED_GENOME)) genome[key] = jitter(SEED_GENOME[key], 3, boundsFor(key));
+  return genome;
 }
 
 /** Multiplicative random jitter around `base`, roughly in [base/spread, base*spread]. Keeps genes positive, unlike additive noise. */
-function jitter(base, spread) {
+function jitter(base, spread, bounds = [MIN_GENE, MAX_GENE]) {
   const factor = Math.exp((Math.random() * 2 - 1) * Math.log(spread));
-  return clamp(base * factor, MIN_GENE, MAX_GENE);
+  return clamp(base * factor, bounds[0], bounds[1]);
 }
 
 function mutate(genome) {
   const result = {};
   for (const key of Object.keys(genome)) {
     const factor = Math.exp((Math.random() * 2 - 1) * MUTATION_RATE);
-    result[key] = clamp(genome[key] * factor, MIN_GENE, MAX_GENE);
+    const [min, max] = boundsFor(key);
+    result[key] = clamp(genome[key] * factor, min, max);
   }
   return result;
 }
@@ -116,10 +140,16 @@ function clamp(value, min, max) {
 // ---------------------------------------------------------------------------
 
 /**
- * Play genome `i` against a handful of randomly sampled opponents from the
- * same generation, both sides, and reduce the results to one comparable
- * number per genome: average per-game (own fitness - opponent fitness),
- * which already has simulate.js's big win/loss bonus folded in.
+ * Play genome `i` against a handful of randomly sampled peer opponents from
+ * the same generation, PLUS a fixed batch against a sharp-shooting
+ * reference opponent (see SHARP_ACCURACY), both sides, and reduce the
+ * results to one comparable number per genome: average per-game (own
+ * fitness - opponent fitness), which already has simulate.js's big win/loss
+ * bonus folded in. Folding the sharp-opponent games into this SAME number
+ * (not just the separate evaluateVsBenchmark() check) is what actually
+ * makes them matter - evaluateVsBenchmark() only informs the printed log
+ * and bestVsBenchmark tracking, it doesn't feed the ranked/avgMargin
+ * selection that decides which genomes survive and breed.
  */
 function evaluate(population, islandLibrary) {
   const scores = population.map(() => ({ total: 0, games: 0, wins: 0 }));
@@ -130,6 +160,20 @@ function evaluate(population, islandLibrary) {
   // games rather than real skill differences).
   const gameStats = { count: 0, totalTurns: 0, minTurns: Infinity, maxTurns: 0, stalemates: 0 };
 
+  const recordGame = (i, result, iIsPlayer1) => {
+    const myFitness = iIsPlayer1 ? result.fitness[1] : result.fitness[2];
+    const oppFitness = iIsPlayer1 ? result.fitness[2] : result.fitness[1];
+    scores[i].total += myFitness - oppFitness;
+    scores[i].games += 1;
+    if (result.winner === (iIsPlayer1 ? 1 : 2)) scores[i].wins += 1;
+
+    gameStats.count += 1;
+    gameStats.totalTurns += result.turns;
+    gameStats.minTurns = Math.min(gameStats.minTurns, result.turns);
+    gameStats.maxTurns = Math.max(gameStats.maxTurns, result.turns);
+    if (result.turns >= MAX_TURNS) gameStats.stalemates += 1;
+  };
+
   for (let i = 0; i < population.length; i++) {
     const opponents = sampleOpponentIndices(population.length, i, OPPONENTS_PER_GENOME);
     for (const j of opponents) {
@@ -139,19 +183,26 @@ function evaluate(population, islandLibrary) {
         const genome1 = iIsPlayer1 ? population[i] : population[j];
         const genome2 = iIsPlayer1 ? population[j] : population[i];
         const result = playMatch(genome1, genome2, islandLibrary, seed);
-
-        const myFitness = iIsPlayer1 ? result.fitness[1] : result.fitness[2];
-        const oppFitness = iIsPlayer1 ? result.fitness[2] : result.fitness[1];
-        scores[i].total += myFitness - oppFitness;
-        scores[i].games += 1;
-        if (result.winner === (iIsPlayer1 ? 1 : 2)) scores[i].wins += 1;
-
-        gameStats.count += 1;
-        gameStats.totalTurns += result.turns;
-        gameStats.minTurns = Math.min(gameStats.minTurns, result.turns);
-        gameStats.maxTurns = Math.max(gameStats.maxTurns, result.turns);
-        if (result.turns >= MAX_TURNS) gameStats.stalemates += 1;
+        recordGame(i, result, iIsPlayer1);
       }
+    }
+
+    // Sharp-opponent games: genome i keeps its own normal shooting skill
+    // (myAccuracy stays default) but assumes a sharp enemy (enemyAccuracy)
+    // and actually faces one (the opponent's own myAccuracy is
+    // SHARP_ACCURACY too, so its shots for real land more often) - see the
+    // big comment on SHARP_ACCURACY above for why this needs to be
+    // asymmetric rather than just making everyone more accurate.
+    for (let g = 0; g < SHARP_OPPONENT_GAMES_PER_GENOME; g++) {
+      const seed = Math.floor(Math.random() * 2 ** 31);
+      const iIsPlayer1 = g % 2 === 0;
+      const genome1 = iIsPlayer1 ? population[i] : BENCHMARK_GENOME;
+      const genome2 = iIsPlayer1 ? BENCHMARK_GENOME : population[i];
+      const iAccuracy = { enemyAccuracy: SHARP_ACCURACY };
+      const oppAccuracy = { myAccuracy: SHARP_ACCURACY };
+      const accuracyOptions = iIsPlayer1 ? { 1: iAccuracy, 2: oppAccuracy } : { 1: oppAccuracy, 2: iAccuracy };
+      const result = playMatch(genome1, genome2, islandLibrary, seed, accuracyOptions);
+      recordGame(i, result, iIsPlayer1);
     }
   }
 
@@ -274,7 +325,7 @@ function tournamentPick(ranked) {
 }
 
 function formatGenome(genome) {
-  return `{ hitShip: ${genome.hitShip.toFixed(1)}, hitBase: ${genome.hitBase.toFixed(1)}, advance: ${genome.advance.toFixed(1)}, defense: ${genome.defense.toFixed(1)}, urgency: ${genome.urgency.toFixed(1)}, safety: ${genome.safety.toFixed(1)}, setup: ${genome.setup.toFixed(1)} }`;
+  return `{ hitShip: ${genome.hitShip.toFixed(1)}, hitBase: ${genome.hitBase.toFixed(1)}, advance: ${genome.advance.toFixed(1)}, defense: ${genome.defense.toFixed(1)}, urgency: ${genome.urgency.toFixed(1)}, safety: ${genome.safety.toFixed(1)}, setup: ${genome.setup.toFixed(1)}, criticalDistance: ${genome.criticalDistance.toFixed(2)} }`;
 }
 
 function writeBestGenome(genome) {

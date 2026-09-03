@@ -56,10 +56,16 @@ export const MAX_TURNS = 400; // safety net against a pathological stalemate - e
  * @param {import("./policy.js").Genome} genome2 - player 2's weights
  * @param {Array} islandLibrary - see loadIslands.js
  * @param {number} seed - map seed, for a reproducible match
+ * @param {{1?: object, 2?: object}} [accuracyOptions] - per-player options
+ *   object passed straight through to policy.js's decideMove() (its
+ *   `{myAccuracy, enemyAccuracy}`) - omit for both players at the default
+ *   "medium" accuracy on both sides. See evolve.js's SHARP_ACCURACY for why
+ *   this exists: training a genome against a fixed, more-accurate-than-
+ *   medium opponent without changing the genome's OWN shooting skill.
  * @returns {{winner: 1|2|null, turns: number, fitness: {1:number, 2:number}}}
  *   winner is null on a MAX_TURNS stalemate or a genuinely stuck bot
  */
-export function playMatch(genome1, genome2, islandLibrary, seed) {
+export function playMatch(genome1, genome2, islandLibrary, seed, accuracyOptions = {}) {
   const state = createGameState();
   setIslandLibrary(state, islandLibrary);
   restartGame(state, seed);
@@ -71,7 +77,7 @@ export function playMatch(genome1, genome2, islandLibrary, seed) {
   while (!isGameOver(state) && turns < MAX_TURNS) {
     turns++;
     const player = state.currentPlayer;
-    const move = decideMove(state, player, genomes[player]);
+    const move = decideMove(state, player, genomes[player], accuracyOptions[player]);
     if (!move) break; // truly no legal move - treat as a draw rather than loop forever
 
     if (move.type === "shoot") {
