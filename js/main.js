@@ -67,7 +67,7 @@ initStartModal(uiOverlay, (mode, botDifficulty) => {
  * ships at their fixed start positions, and wire up ship-placement input
  * (plus the bot's own turn-taking, for a single-player match).
  * @param {"pvp"|"pvb"} mode
- * @param {"easy"|"medium"|"hard"|null} botDifficulty
+ * @param {"easy"|"medium"|"hard"|"trained"|null} botDifficulty
  * @returns {Promise<void>}
  */
 async function startMatch(mode, botDifficulty) {

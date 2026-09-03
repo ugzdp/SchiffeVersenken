@@ -363,9 +363,9 @@ function createRulesButton(overlayEl) {
 /**
  * Show the start modal: first a Multiplayer/Single Player choice, then -
  * only if Single Player was picked - a bot difficulty choice (easy/medium/
- * hard), before finally starting the match.
+ * hard/trained), before finally starting the match.
  * @param {HTMLElement} overlayEl - the #ui-overlay element from index.html
- * @param {(mode: "pvp"|"pvb", botDifficulty: "easy"|"medium"|"hard"|null) => void} onStart
+ * @param {(mode: "pvp"|"pvb", botDifficulty: "easy"|"medium"|"hard"|"trained"|null) => void} onStart
  * @returns {void}
  */
 export function initStartModal(overlayEl, onStart) {
@@ -415,6 +415,7 @@ export function initStartModal(overlayEl, onStart) {
       ["easy", "Leicht"],
       ["medium", "Mittel"],
       ["hard", "Schwer"],
+      ["trained", "Trainiert"],
     ]) {
       choices.appendChild(
         createChoiceButton(label, () => {
@@ -445,7 +446,7 @@ export function initStartModal(overlayEl, onStart) {
 
 // Display names for the bot difficulty label shown wherever "Player 2" would
 // otherwise appear once state.mode is "pvb" (see seatLabel below).
-const BOT_DIFFICULTY_LABEL = { easy: "Leicht", medium: "Mittel", hard: "Schwer" };
+const BOT_DIFFICULTY_LABEL = { easy: "Leicht", medium: "Mittel", hard: "Schwer", trained: "Trainiert" };
 
 /**
  * The name to show for one seat: "Player N" normally, or "Bot (<difficulty>)"

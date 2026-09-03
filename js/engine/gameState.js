@@ -90,8 +90,9 @@
  *   human, player 1, against the bot, always player 2 - see js/botController.js).
  *   Chosen once on the start modal (js/render/ui.js initStartModal) and left
  *   untouched by resetMatch(), so it survives "Generate new map".
- * @property {"easy"|"medium"|"hard"|null} botDifficulty - only meaningful
- *   when mode is "pvb" (see js/engine/bot.js's BOT_DIFFICULTY)
+ * @property {"easy"|"medium"|"hard"|"trained"|null} botDifficulty - only
+ *   meaningful when mode is "pvb" (see js/engine/bot.js's BOT_DIFFICULTY;
+ *   "trained" instead routes to js/engine/trainedBot.js)
  * @property {boolean} paused - true while the match is paused (Settings >
  *   Pause game - see js/render/ui.js). js/input.js blocks canvas pointer
  *   input while this is true, and main.js skips the bot controller's
@@ -190,7 +191,7 @@ export function recordBotShotOutcome(state, originId, targetId, hitShipId) {
  * across "Generate new map" for the rest of the browser session.
  * @param {GameState} state
  * @param {"pvp"|"pvb"} mode
- * @param {"easy"|"medium"|"hard"|null} [botDifficulty] - required when mode is "pvb"
+ * @param {"easy"|"medium"|"hard"|"trained"|null} [botDifficulty] - required when mode is "pvb"
  * @returns {void}
  */
 export function setMatchMode(state, mode, botDifficulty = null) {

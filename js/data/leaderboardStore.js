@@ -69,7 +69,7 @@ const MAX_MATCH_HISTORY = 50;
  * @property {{1: SeatTotals, 2: SeatTotals}} totals - PvP (hot-seat) matches only
  * @property {MatchRecord[]} history - most recent MAX_MATCH_HISTORY PvP matches, newest first
  * @property {AttemptEntry[]} attempts - every PvP match's winning-side result, unordered, uncapped
- * @property {{easy: VsBotRecord, medium: VsBotRecord, hard: VsBotRecord}} vsBot -
+ * @property {{easy: VsBotRecord, medium: VsBotRecord, hard: VsBotRecord, trained: VsBotRecord}} vsBot -
  *   single-player results, kept separate from the PvP totals/history/attempts
  *   above so a beaten easy bot and a hard-fought PvP win don't get mixed
  *   together on the "Top Scores"/leaderboard screens.
@@ -88,6 +88,7 @@ function emptyLeaderboard() {
       easy: emptyVsBotRecord(),
       medium: emptyVsBotRecord(),
       hard: emptyVsBotRecord(),
+      trained: emptyVsBotRecord(),
     },
   };
 }
@@ -131,7 +132,7 @@ export function loadLeaderboard() {
  * @param {{1: {shots:number, hits:number}, 2: {shots:number, hits:number}}} matchStats - state.stats at game end
  * @param {{score:number, shots:number, hits:number, durationMs:number|null}} attempt -
  *   the winning player's final computeScore() plus shots/hits/time-to-win
- * @param {{mode?: "pvp"|"pvb", botDifficulty?: "easy"|"medium"|"hard"|null}} [matchMeta] -
+ * @param {{mode?: "pvp"|"pvb", botDifficulty?: "easy"|"medium"|"hard"|"trained"|null}} [matchMeta] -
  *   defaults to a PvP match, matching every call site before single-player existed
  * @returns {{data: LeaderboardData, timestamp: number}} the updated leaderboard
  *   (already saved) plus this match's timestamp, so the caller can find its

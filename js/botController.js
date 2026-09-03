@@ -19,6 +19,7 @@ import { Phase, recordBotShotOutcome, setPhase } from "./engine/gameState.js";
 import { beginPlacementConfirmation, commitPlacement, endTurn, fireShot, placeShip } from "./engine/actions.js";
 import { BOT_DIFFICULTY, decideBotMove } from "./engine/bot.js";
 import { PLACEMENT_CONFIRM_WINDOW_MS } from "./engine/rules.js";
+import { TRAINED_BOT_THINK_MS, decideTrainedBotMove } from "./engine/trainedBot.js";
 import { playHitEnemy, playHitFriendly, playPlaceShip, playShotFired, playSplash, playVictory } from "./render/audio.js";
 
 // The bot is always player 2 (human is always player 1 in single-player
@@ -38,7 +39,7 @@ const SHOT_RESOLVE_DISPLAY_MS = 1400;
 /**
  * Wire up the bot's turn-taking. Call once at match start when
  * state.mode === "pvb", alongside js/input.js's initInput().
- * @param {import("./engine/gameState.js").GameState & {dragPath?:object|null, botDifficulty?: "easy"|"medium"|"hard"}} state
+ * @param {import("./engine/gameState.js").GameState & {dragPath?:object|null, botDifficulty?: "easy"|"medium"|"hard"|"trained"}} state
  * @param {() => void} [onTurnChanged] - same callback main.js passes to
  *   initInput(), so the menu bar/shoot button refresh after a bot action too
  * @returns {{update: (time:number) => void, reset: () => void}}
@@ -80,10 +81,11 @@ export function initBotController(state, onTurnChanged) {
 
   function runThinking(time) {
     const difficultyKey = state.botDifficulty || "medium";
-    const thinkMs = BOT_DIFFICULTY[difficultyKey].thinkMs;
+    const isTrained = difficultyKey === "trained";
+    const thinkMs = isTrained ? TRAINED_BOT_THINK_MS : BOT_DIFFICULTY[difficultyKey].thinkMs;
     if (time - phaseStartTime < thinkMs) return;
 
-    const move = decideBotMove(state, BOT_OWNER, difficultyKey);
+    const move = isTrained ? decideTrainedBotMove(state, BOT_OWNER) : decideBotMove(state, BOT_OWNER, difficultyKey);
     if (!move) {
       // No legal move at all - should not happen given the map generator's
       // playability guarantee, but don't soft-lock the match if it does.

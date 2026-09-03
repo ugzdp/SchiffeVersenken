@@ -540,8 +540,13 @@ function decidePlacement(state, owner, difficulty, options = {}) {
   return null;
 }
 
-/** Sample random open-water points reachable in a straight line from one of `ownShips`. */
-function sampleCandidateEndpoints(state, ownShips, islandWorldShapes, count) {
+/**
+ * Sample random open-water points reachable in a straight line from one of
+ * `ownShips`. Exported (visibility only, same behavior) so
+ * tools/train/policy.js's learned self-play policy can reuse the exact same
+ * candidate-endpoint sampling as the shipped bot, instead of duplicating it.
+ */
+export function sampleCandidateEndpoints(state, ownShips, islandWorldShapes, count) {
   const points = [];
   for (let i = 0; i < count; i++) {
     const origin = ownShips[Math.floor(Math.random() * ownShips.length)];
@@ -678,7 +683,10 @@ function stackingPenalty(point, ownShips) {
  * artifact can never slip through as a "legal" ship placement.
  * @returns {Array<{x:number,y:number}>|null}
  */
-function buildPlacementPath(origin, target, islandWorldShapes, existingShips) {
+// Exported (visibility only, same behavior) - see sampleCandidateEndpoints()
+// above for why: tools/train/policy.js reuses this rather than duplicating
+// the A* water-routing logic.
+export function buildPlacementPath(origin, target, islandWorldShapes, existingShips) {
   const originPoint = { x: origin.x, y: origin.y };
   const straight = [originPoint, { x: target.x, y: target.y }];
   if (pathLength(straight) <= MAX_LINE_LENGTH && isValidShipPlacementPath(straight, islandWorldShapes, existingShips)) {
