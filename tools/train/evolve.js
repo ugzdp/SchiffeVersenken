@@ -24,11 +24,15 @@ import { MAX_TURNS, playMatch } from "./simulate.js";
 // ---------------------------------------------------------------------------
 // Knobs
 // ---------------------------------------------------------------------------
+// Scaled WAY down for a quick ~10 minute sanity check of the new `shield`
+// mechanism (see policy.js) - not a real search. Raise these back up
+// (28/300 was the last "real" scale used) once this looks directionally
+// promising and is worth a proper multi-hour run.
 const POPULATION_SIZE = 16;
-const GENERATIONS = 80;
+const GENERATIONS = 25;
 const OPPONENTS_PER_GENOME = 6; // sampled from the same generation, not a full round-robin (keeps cost linear in population size)
-const GAMES_PER_OPPONENT = 3; // alternating sides, to cancel out any first-move edge - 18 games/genome/gen total, vs. 8 in the first smoke-test run
-const ELITE_COUNT = 2; // top genomes carried into the next generation unchanged
+const GAMES_PER_OPPONENT = 3; // alternating sides, to cancel out any first-move edge
+const ELITE_COUNT = 3; // top genomes carried into the next generation unchanged
 // Lowered from the first real run (0.25/0.1): that run's best-ever result
 // happened at generation 13 and was never beaten again in the remaining 67
 // generations - a sign the population was drifting via mutation/newcomer
@@ -42,10 +46,17 @@ const RANDOM_NEWCOMER_RATE = 0.05;
 // cheap (each game is well under 100ms) and makes this number trustworthy.
 const BENCHMARK_GAMES = 40;
 
-// Sane starting scale for the search - the same numbers as simulate.js's
-// fixed FITNESS yardstick, since that's a reasonable prior for how much
-// each event SHOULD matter before evolution adjusts it.
-const SEED_GENOME = { hitShip: 10, hitBase: 200, advance: 50, defense: 50, safety: 50, setup: 50 };
+// Starting scale for the search - the best genome from the hall-of-fame run
+// (93% vs js/engine/bot.js medium; a large 240-game head-to-head against
+// the currently-shipped bot came out close but not clearly ahead - 46.7%),
+// PLUS a starting `urgency` value now that it's split from `defense` (see
+// policy.js's Genome typedef) rather than reusing that run's coupled value.
+// Whenever the scoring formula itself changes, re-seed from a genome
+// actually re-validated under the NEW formula, not just the highest number
+// this file has ever printed - reusing a stale genome's raw numbers across
+// a formula change has already caused one near-coin-flip collapse (see
+// tools/train/TODO.md item 3).
+const SEED_GENOME = { hitShip: 9.6, hitBase: 70.0, advance: 105.2, defense: 3.3, urgency: 9.5, safety: 33.9, setup: 86.0 };
 const MIN_GENE = 0.1;
 const MAX_GENE = 2000;
 
@@ -69,6 +80,7 @@ function randomGenome() {
     hitBase: jitter(SEED_GENOME.hitBase, 3),
     advance: jitter(SEED_GENOME.advance, 3),
     defense: jitter(SEED_GENOME.defense, 3),
+    urgency: jitter(SEED_GENOME.urgency, 3),
     safety: jitter(SEED_GENOME.safety, 3),
     setup: jitter(SEED_GENOME.setup, 3),
   };
@@ -217,7 +229,7 @@ function run() {
         `${gamesThisGen} games in ${(genMs / 1000).toFixed(1)}s (${msPerGame.toFixed(1)}ms/game) | best genome ${formatGenome(ranked[0].genome)}`
     );
 
-    population = nextGeneration(ranked);
+    population = nextGeneration(ranked, bestVsBenchmark.genome);
   }
 
   console.log(`\nTotal run time: ${((Date.now() - runStart) / 1000).toFixed(1)}s`);
@@ -230,8 +242,19 @@ function run() {
   writeBestGenome(bestVsBenchmark.genome);
 }
 
-function nextGeneration(ranked) {
+/**
+ * `ranked`'s ordinary elitism only protects genomes by the noisy
+ * co-evolving avgMargin (sampled peers, drifting every generation) - the
+ * actual best-known genome (`hallOfFame`, tracked separately in run() by
+ * the far less noisy vs-benchmark measurement) had no such protection
+ * before this and could be bred away by chance, which is the likely cause
+ * of every run so far peaking mid-run and never recovering. Guaranteeing
+ * it a seat every generation means it's always available to breed from,
+ * and can only be displaced by something that measurably beats it later.
+ */
+function nextGeneration(ranked, hallOfFame) {
   const next = ranked.slice(0, ELITE_COUNT).map((r) => r.genome);
+  if (hallOfFame) next.push(hallOfFame);
   while (next.length < ranked.length) {
     if (Math.random() < RANDOM_NEWCOMER_RATE) {
       next.push(randomGenome());
@@ -251,7 +274,7 @@ function tournamentPick(ranked) {
 }
 
 function formatGenome(genome) {
-  return `{ hitShip: ${genome.hitShip.toFixed(1)}, hitBase: ${genome.hitBase.toFixed(1)}, advance: ${genome.advance.toFixed(1)}, defense: ${genome.defense.toFixed(1)}, safety: ${genome.safety.toFixed(1)}, setup: ${genome.setup.toFixed(1)} }`;
+  return `{ hitShip: ${genome.hitShip.toFixed(1)}, hitBase: ${genome.hitBase.toFixed(1)}, advance: ${genome.advance.toFixed(1)}, defense: ${genome.defense.toFixed(1)}, urgency: ${genome.urgency.toFixed(1)}, safety: ${genome.safety.toFixed(1)}, setup: ${genome.setup.toFixed(1)} }`;
 }
 
 function writeBestGenome(genome) {

@@ -23,7 +23,7 @@ export const FITNESS = {
   advance: 50, // per unit (0-1 map scale) closer to the enemy base
   defense: 50, // per unit (0-1 map scale) the enemy's closest ship to our base retreats (i.e. gets sunk)
   win: 1000,
-  loss: -1000,
+  loss: -1500,
   // Subtracted from the winner's `win` bonus, once per turn the match took -
   // winning in 15 turns is worth more than winning in 150. Only applied to
   // the winner (see applyOutcomeBonus): a flat per-turn cost applied to
@@ -33,6 +33,17 @@ export const FITNESS = {
   // anything. WIN_SPEED_FLOOR guarantees a win is always worth more than a
   // loss even in a near-MAX_TURNS win.
   speedPenaltyPerTurn: 2,
+  // The actual objective is hitting the enemy base - everything else
+  // (ordinary kills, advance, defense) is a real event but not THE event.
+  // Losing means that objective was never met, so the loser's accumulated
+  // mid-game fitness is heavily discounted (not zeroed - inflicting some
+  // damage before losing is still marginally better than losing having
+  // done nothing) before the flat `loss` penalty is added - see
+  // applyOutcomeBonus(). Without this, a genome that racks up kills/
+  // advance but still loses could end up with a similar-looking fitness to
+  // one that barely engaged at all, diluting the "winning is what matters"
+  // signal evolution is supposed to be selecting on.
+  loserAccumulatedDiscount: 0.25,
 };
 
 const WIN_SPEED_FLOOR = 50;
@@ -140,14 +151,20 @@ function winnerOf(state) {
  * turn - a decisive win should always outweigh accumulated small-event
  * points - and shrinks the winner's bonus by how long the match took, so a
  * fast win scores higher than a slow one (see FITNESS.speedPenaltyPerTurn).
+ * The loser's own accumulated fitness (never negative - see playShoot/
+ * playPlacement, every event they add is a non-negative credit) is also
+ * heavily discounted before the flat `loss` penalty is added - see
+ * FITNESS.loserAccumulatedDiscount.
  */
 function applyOutcomeBonus(state, fitness, turns) {
   const winner = winnerOf(state);
   if (!winner) return fitness;
   const loser = winner === 1 ? 2 : 1;
   const winBonus = Math.max(WIN_SPEED_FLOOR, FITNESS.win - FITNESS.speedPenaltyPerTurn * turns);
-  return { ...fitness, [winner]: fitness[winner] + winBonus, [loser]: fitness[loser] + FITNESS.loss };
+  const discountedLoserFitness = fitness[loser] * FITNESS.loserAccumulatedDiscount;
+  return { ...fitness, [winner]: fitness[winner] + winBonus, [loser]: discountedLoserFitness + FITNESS.loss };
 }
+
 
 /** fireShot() only uses `time` to stamp shotLine/sinking-animation timestamps we never read headlessly - any increasing number works. */
 let simulatedClock = 0;

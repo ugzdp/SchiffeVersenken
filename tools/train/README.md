@@ -72,8 +72,48 @@ same four numbers, but they're not shared:
   than by playing better - `FITNESS` is the fair, common ruler every genome
   is measured against instead.
 
-`SEED_GENOME` in `evolve.js` starts the search at the same values as
-`FITNESS`, as a sane prior, then lets mutation/selection move away from it.
+`SEED_GENOME` in `evolve.js` starts the search around the best genome found
+so far (not the original generic guess, once one exists), as a prior, then
+lets mutation/selection move away from it.
+
+## Why `defense` also drives urgency and defensive placement now
+
+Playtesting again surfaced: (1) a shot at a ship dangerously close to our
+base was only ever valued as `pHit * defenseValue`, so a legitimately
+desperate low-odds shot always scored near zero and lost out to a
+comfortable but pointless shot elsewhere; (2) placement had no way to value
+"post a ship near home so it can shoot the attacker next turn" - only
+`setup`'s generic any-enemy opportunity existed, with no extra credit for
+specifically covering the closest threat. Both are now folded into
+`defense` rather than adding new variables:
+- `bestShootCandidate`'s `urgencyBonus = genome.defense * urgency` (where
+  `urgency = max(0, 1 - currentClosestDist)`, needing no extra hand-picked
+  threshold since map coordinates are already 0-1) is added on top of the
+  normal pHit-scaled score, NOT multiplied by pHit - so even a low-odds
+  shot at the closest threat can win once that threat is close enough.
+- `bestPlacementCandidate`'s `defensiveSetup` reuses the exact same
+  `pHit * defense * distanceGained` formula as a realized defensive kill,
+  computed prospectively for the placement candidate's position instead of
+  an existing ship, survival-discounted by `(1 - exposure)` like the
+  general `setup` term.
+
+## Why `shield` was added (reuses `urgency`, not a new variable)
+
+Playtesting again: the bot would sometimes take a long, low-odds shot at an
+enemy dangerously close to the base instead of placing a defensive ship,
+even though the enemy being close to the *base* doesn't mean it's close to
+*our ships* - `urgency` is based on distance-to-base, but a shot's actual
+odds depend on distance-to-our-ships, so these can disagree. The fix isn't
+weakening `urgencyBonus`, it's giving placement a real, well-modeled reason
+to compete: a shot in this game stops at the first thing it hits
+(`resolveShot`), so a new ship placed directly between the closest threat
+and our base can physically intercept a shot aimed at the base - not just
+threaten to retaliate (that's what `defensiveSetup` already covers).
+`shieldValue` computes this precisely: the closest threat's hit-chance
+against our base, with vs. without the candidate ship in the blocking-ships
+list - see `bestPlacementCandidate`. Deliberately NOT survival-discounted
+like `setup`/`defensiveSetup` - blocking the shot *is* the ship getting
+hit, not something that only pays off if avoided.
 
 ## Reading the per-generation log line
 
@@ -112,6 +152,15 @@ happens during a simulated match (see `simulate.js`):
     cancel out of the margin (`fitness[1] - fitness[2]`) evolve.js actually
     selects on, since it'd be identical on both sides of the same match.
 
+The loser's own accumulated fitness (always non-negative - every mid-game
+event is a credit, never a debit) is heavily discounted before the flat
+`loss` penalty is added - `FITNESS.loserAccumulatedDiscount` (0.25 as of
+this writing). The actual objective is hitting the enemy base; ordinary
+kills/advance/defense are real events but not THE event, so a genome that
+racked up a lot of secondary points while still losing shouldn't end up
+looking similar to one that barely engaged at all - see
+`applyOutcomeBonus()`.
+
 There's no separate fixed reward for placing safely - `Genome.safety`
 (unlike the other four weights) isn't graded against a fixed `FITNESS`
 counterpart at all. It only shapes *decision-making*: a placement's score
@@ -125,9 +174,11 @@ your relative margin - so no explicit "ship lost" penalty was needed.
 
 ## Using a trained genome
 
-`best-genome.json` is just `{ hitShip, hitBase, advance, defense }` - not
-wired into the shipped game yet. To try it, pass it as the `genome`
-argument to `policy.js`'s `decideMove()` from your own script (see
-`simulate.js`'s `playMatch()` for the calling pattern), or use it as a
-starting point for a future `js/engine/bot.js` rewrite once you're happy
-with what it discovered.
+`best-genome.json` is just `{ hitShip, hitBase, advance, defense, safety,
+setup }`. It IS wired into the shipped game: `js/engine/trainedBot.js` is a
+straight port of `policy.js` into `js/engine/` with a genome baked in as
+`TRAINED_GENOME`, selectable in-game as the "Trainiert" difficulty. It is
+NOT auto-updated by a training run - after a run produces a genome you want
+to ship, manually update `TRAINED_GENOME` (and mirror any scoring-formula
+changes made to `policy.js`) in `trainedBot.js`, then re-validate with
+`node tools/train/compareVsShipped.js` before trusting it.

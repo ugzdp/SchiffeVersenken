@@ -11,10 +11,22 @@
 // chosen by hand; everything else in the scoring is what evolution found.
 //
 // TRAINED_GENOME is baked-in output from a real training run, not invented:
-// tools/train/best-genome.json as of the run that beat js/engine/bot.js's
-// "medium" bot 96/100 games (sides alternated) in
-// tools/train/compareVsShipped.js. See tools/train/README.md for how it was
-// produced and what each number means. This file is a straight port of
+// this version adds `shieldValue` - a placement can now score for
+// physically standing between the closest enemy threat and our base (a
+// shot stops at the first thing it hits, so this can intercept a shot
+// aimed at the base, not just threaten to retaliate) - on top of the
+// urgency/defensiveSetup scoring from before. Validated at 91/100 vs
+// js/engine/bot.js's "medium" bot, and - the more meaningful comparison -
+// 51.0/49.0 in a 200-game direct head-to-head against the PREVIOUS shipped
+// genome (the first candidate to edge ahead at all; three prior candidates
+// without `shieldValue` all landed at 45-47% against that same previous
+// genome). That validation came from only a quick, small-scale training
+// pass (25 generations, population 16, ~8 minutes) rather than the full
+// 250-300 generation runs used for earlier versions - shipped on the
+// user's explicit call to try it now rather than wait for a longer run,
+// given the strong quick-run showing. See tools/train/TODO.md for the full
+// trail and tools/train/README.md for how it was produced and what each
+// number means. This file is a straight port of
 // tools/train/policy.js into js/engine/ (that file has no Node-only code -
 // no fs/path imports - so the only change needed was import paths and
 // folding the genome argument into a constant) so the single-player bot can
@@ -44,11 +56,12 @@ const NORMAL_SHIP_HIT_RADIUS = shipHitRadius({ isBase: false });
 /**
  * The output of tools/train/evolve.js's search - see tools/train/README.md
  * for what each number means (roughly: how much sinking an ordinary ship,
- * sinking the enemy base, advancing toward the enemy base, defensively
- * sinking the enemy's biggest threat, placing safely, and opening up a
- * future shot on any enemy ship are each worth, relative to each other).
+ * sinking the enemy base, advancing toward the enemy base, REALIZED
+ * defense, ATTEMPTED/prospective defense (urgency), placing safely, and
+ * opening up a future shot on any enemy ship are each worth, relative to
+ * each other).
  */
-const TRAINED_GENOME = { hitShip: 20.7, hitBase: 82.2, advance: 90.1, defense: 54.9, safety: 20.1, setup: 65.0 };
+const TRAINED_GENOME = { hitShip: 5.5, hitBase: 76.4, advance: 68.1, defense: 6.1, urgency: 13.2, safety: 19.9, setup: 51.9 };
 
 /**
  * Decide the trained bot's whole move for this turn.
@@ -71,7 +84,7 @@ export function decideTrainedBotMove(state, owner) {
   const mountainShapes = islandWorldShapes.flatMap((island) => island.mountainShapes);
 
   const bestShot = bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes);
-  const bestPlacement = bestPlacementCandidate(state, ownShips, enemyShips, enemyBase, islandWorldShapes, mountainShapes);
+  const bestPlacement = bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes);
 
   if (bestShot && (!bestPlacement || bestShot.score >= bestPlacement.score)) return toShootMove(bestShot);
   if (bestPlacement) return { type: "place", path: bestPlacement.path };
@@ -81,11 +94,13 @@ export function decideTrainedBotMove(state, owner) {
 
 /**
  * Every (own ship, enemy ship) pair with a nonzero hit chance, scored as
- * pHit * (kill value + expected defensive value). The defensive term only
- * ever applies to whichever enemy ship currently sits closest to our own
- * base - sinking it is the only way a shot can change "distance from the
- * enemy's closest ship to our base" (ships never move once placed), valued
- * by how much further away the *next*-closest enemy ship already sits.
+ * pHit * (kill value + expected defensive value), plus a pHit-INdependent
+ * urgency bonus on a shot at the closest threat (see urgencyBonus below).
+ * The defensive term only ever applies to whichever enemy ship currently
+ * sits closest to our own base - sinking it is the only way a shot can
+ * change "distance from the enemy's closest ship to our base" (ships never
+ * move once placed), valued by how much further away the *next*-closest
+ * enemy ship already sits.
  */
 function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes) {
   if (enemyShips.length === 0) return null;
@@ -93,11 +108,17 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes)
   let closestShip = null;
   let currentClosestDist = 0;
   let nextClosestDist = 0;
+  let urgency = 0;
   if (myBase) {
     const sorted = [...enemyShips].sort((a, b) => distance(a, myBase) - distance(b, myBase));
     closestShip = sorted[0];
     currentClosestDist = distance(closestShip, myBase);
     nextClosestDist = sorted.length > 1 ? distance(sorted[1], myBase) : currentClosestDist;
+    // How dangerously close the single worst threat already is - map
+    // coordinates are 0-1, so "1 - distance" needs no extra hand-picked
+    // threshold: an enemy already on top of our base scores urgency 1, one
+    // at the far corner of the map scores ~0.
+    urgency = Math.max(0, 1 - currentClosestDist);
   }
 
   let best = null;
@@ -109,9 +130,16 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes)
       const pHit = hitProbability(originShip, target, shipHitRadius(target), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
       if (pHit <= 0) continue;
 
+      const isClosestThreat = closestShip && target.id === closestShip.id;
       const killValue = target.isBase ? TRAINED_GENOME.hitBase : TRAINED_GENOME.hitShip;
-      const defenseValue = closestShip && target.id === closestShip.id ? TRAINED_GENOME.defense * Math.max(0, nextClosestDist - currentClosestDist) : 0;
-      const score = pHit * (killValue + defenseValue);
+      const defenseValue = isClosestThreat ? TRAINED_GENOME.defense * Math.max(0, nextClosestDist - currentClosestDist) : 0;
+      // Desperation shot: unlike defenseValue above, this ISN'T scaled by
+      // pHit - a legal but low-odds shot (pHit already confirmed > 0) at a
+      // ship dangerously close to our base is still worth attempting, since
+      // letting it advance further unchallenged is worse than a long shot
+      // at stopping it.
+      const urgencyBonus = isClosestThreat ? TRAINED_GENOME.urgency * urgency : 0;
+      const score = pHit * (killValue + defenseValue) + urgencyBonus;
 
       if (!best || score > best.score) best = { originShip, target, pHit, distance: d, score };
     }
@@ -121,18 +149,38 @@ function bestShootCandidate(state, ownShips, enemyShips, myBase, mountainShapes)
 
 /**
  * Every legal freehand placement this turn, scored as advance progress plus
- * setup value, minus estimated risk: how much closer it gets the fleet to
- * the enemy base (advance), how good a shot it opens on ANY enemy ship next
- * turn (setup, discounted by the chance the ship doesn't survive to use it
- * - see placementRiskAndOpportunity()), minus how likely it is to get that
- * ship sunk next turn regardless (safety). The setup term is what lets a
- * spot that's farther from the enemy base, or riskier, still win if it
- * clears an enemy ship blocking the way forward or lines up a kill -
- * without it, "progress" only ever meant immediate straight-line distance.
+ * setup value plus defensive-setup value plus shield value, minus estimated
+ * risk: how much closer it gets the fleet to the enemy base (advance), how
+ * good a shot it opens on ANY enemy ship next turn (setup - see
+ * placementRiskAndOpportunity()), how good a shot it opens SPECIFICALLY on
+ * the enemy ship currently closest to our own base (defensiveSetup - "post
+ * a new ship near home so it can shoot the attacker next turn"), how much
+ * it physically blocks that same closest threat's own shot at our base
+ * (shieldValue - a shot stops at the first thing it hits, so a ship placed
+ * in the way can intercept it), and how likely it is to get that ship sunk
+ * next turn regardless (safety, penalized). Without setup/defensiveSetup/
+ * shieldValue, "progress" only ever meant immediate straight-line distance
+ * to the enemy base, so a placement that clears the way around a blocking
+ * enemy ship, or defends home territory instead of advancing at all, could
+ * never outscore just standing pat or advancing in a straight line.
  */
-function bestPlacementCandidate(state, ownShips, enemyShips, enemyBase, islandWorldShapes, mountainShapes) {
+function bestPlacementCandidate(state, ownShips, enemyShips, myBase, enemyBase, islandWorldShapes, mountainShapes) {
   if (!enemyBase) return null;
   const currentMinDist = Math.min(...ownShips.map((s) => distance(s, enemyBase)));
+
+  // Closest enemy threat to our own base right now - mirrors
+  // bestShootCandidate's own closestShip logic exactly, needed here so a
+  // placement that would let the NEW ship threaten that same enemy next
+  // turn gets defensive credit too (see defensiveSetup below).
+  let closestThreat = null;
+  let currentClosestThreatDist = 0;
+  let nextClosestThreatDist = 0;
+  if (myBase && enemyShips.length > 0) {
+    const sorted = [...enemyShips].sort((a, b) => distance(a, myBase) - distance(b, myBase));
+    closestThreat = sorted[0];
+    currentClosestThreatDist = distance(closestThreat, myBase);
+    nextClosestThreatDist = sorted.length > 1 ? distance(sorted[1], myBase) : currentClosestThreatDist;
+  }
 
   const raw = sampleCandidateEndpoints(state, ownShips, islandWorldShapes, PLACEMENT_CANDIDATE_COUNT);
   if (raw.length === 0) return null;
@@ -146,7 +194,43 @@ function bestPlacementCandidate(state, ownShips, enemyShips, enemyBase, islandWo
       // chance (1 - exposure), on top of the flat safety*exposure cost
       // every placement already pays regardless of whether it set up a shot.
       const survivalWeightedOpportunity = opportunity * (1 - exposure);
-      const score = TRAINED_GENOME.advance * progress - TRAINED_GENOME.safety * exposure + TRAINED_GENOME.setup * survivalWeightedOpportunity;
+
+      // Defensive setup: same shape as bestShootCandidate's realized
+      // defenseValue (pHit * distance gained by removing the closest
+      // threat), just computed prospectively for the NEW ship's position
+      // instead of an existing one, survival-discounted the same way as
+      // the general setup term above, and using TRAINED_GENOME.urgency
+      // (not .defense) - this is "how eager am I to set up a shot on the
+      // threat before it's even landed," the same category of prospective/
+      // uncertain defense as urgencyBonus above, not the realized payoff.
+      let defensiveSetup = 0;
+      if (closestThreat) {
+        const blockingShips = state.ships.filter((s) => s.id !== closestThreat.id);
+        const pHitClosestThreat = hitProbability(c.point, closestThreat, shipHitRadius(closestThreat), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, blockingShips);
+        const distanceGained = Math.max(0, nextClosestThreatDist - currentClosestThreatDist);
+        defensiveSetup = pHitClosestThreat * TRAINED_GENOME.urgency * distanceGained * (1 - exposure);
+      }
+
+      // Shield: a shot stops at the first thing it hits (rules.js's
+      // resolveShot), so a new ship standing physically between the
+      // closest threat and our own base can intercept a shot aimed at the
+      // base, not just threaten to shoot back - a distinct mechanism from
+      // defensiveSetup above (retaliation potential). Valued by exactly
+      // how much it reduces the closest threat's own hit chance against
+      // our base (computed with vs. without this hypothetical ship in the
+      // blocking-ships list). NOT survival-discounted like setup/
+      // defensiveSetup - blocking the shot IS the ship getting hit, not
+      // something that only pays off if it's avoided.
+      let shieldValue = 0;
+      if (myBase && closestThreat) {
+        const baseBlockingShips = state.ships.filter((s) => s.id !== closestThreat.id && s.id !== myBase.id);
+        const threatWithoutNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, baseBlockingShips);
+        const hypotheticalShip = { x: c.point.x, y: c.point.y, isBase: false };
+        const threatWithNewShip = hitProbability(closestThreat, myBase, shipHitRadius(myBase), AIM_ERROR_DEG, DISTANCE_ERROR_FACTOR, mountainShapes, [...baseBlockingShips, hypotheticalShip]);
+        shieldValue = Math.max(0, threatWithoutNewShip - threatWithNewShip) * TRAINED_GENOME.urgency;
+      }
+
+      const score = TRAINED_GENOME.advance * progress - TRAINED_GENOME.safety * exposure + TRAINED_GENOME.setup * survivalWeightedOpportunity + defensiveSetup + shieldValue;
       return { ...c, score };
     })
     .sort((a, b) => b.score - a.score)
