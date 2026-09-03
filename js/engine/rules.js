@@ -126,11 +126,29 @@ export const ISLAND_PLACEMENT_DEADLINE_MS = 500;
 /** Random placement attempts tried for one normal island before giving up on it. */
 export const MAX_PLACEMENT_ATTEMPTS = 60;
 
-/** Distance in from the left/right map edge where a base island's zone starts. */
-export const BASE_ZONE_MARGIN = 0.06;
+/**
+ * Scale a "base"-type island shape is always placed at when it is used as
+ * one of the two homebase-shielding islands (see mapGenerator.js and
+ * data/islands/island_homebase_*.json). Unlike normal filler islands -
+ * which get a random scale in [ISLAND_SCALE_MIN, ISLAND_SCALE_MAX] - a
+ * homebase island's size must stay constant every match, otherwise the
+ * amount of cover it gives the base ship would vary run to run.
+ */
+export const HOMEBASE_ISLAND_SCALE = 0.15;
 
-/** Width of the vertical band (from BASE_ZONE_MARGIN inward) a base island may be placed in. */
-export const BASE_ZONE_WIDTH = 0.14;
+/**
+ * Rotation (radians) a homebase island shape is placed at for player 1
+ * (bottom-left) and player 2 (top-right). Each island_homebase_*.json shape
+ * is authored so that, at rotation 0, its land mass sits up-and-right of its
+ * `baseAnchor` - i.e. between the anchor and the map's center, the direction
+ * threats travel from. Player 1's base sits in the bottom-left corner, so
+ * "up-and-right" already points at the open map/opponent and rotation 0 is
+ * used as-is. Player 2's base is the point-reflection of player 1's across
+ * the map center (see BASE_SHIP_START), so rotating the same shape by PI
+ * mirrors it into the correct up-and-right-becomes-down-and-left orientation
+ * for that corner instead of needing a second authored shape per design.
+ */
+export const HOMEBASE_ROTATION = { 1: 0, 2: Math.PI };
 
 // ---------------------------------------------------------------------------
 // Basic vector helpers
@@ -460,6 +478,30 @@ export function transformIslandPolygon(polygon, placement) {
     // Translate to the placement position.
     return [x + rx, y + ry];
   });
+}
+
+/**
+ * Inverse of transformIslandPolygon for a single point: given a "base"-type
+ * island entry's `baseAnchor` (its local 0-1 bay/cove point, see
+ * data/schema.md) and the fixed scale/rotation it must be placed at, solve
+ * for the placement position that makes the anchor land exactly on
+ * `targetPoint` (map-relative space) once transformed. Used by
+ * mapGenerator.js to pin each homebase island's bay around the fixed
+ * BASE_SHIP_START point instead of picking a random spot for it.
+ * @param {{x:number,y:number}} anchor - local 0-1 point (an island entry's baseAnchor)
+ * @param {{x:number,y:number}} targetPoint - where the anchor must end up, map-relative
+ * @param {number} scale
+ * @param {number} rotation
+ * @returns {{x:number,y:number,scale:number,rotation:number}} a full placement object
+ */
+export function solveHomebaseIslandPlacement(anchor, targetPoint, scale, rotation) {
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const cx = (anchor.x - 0.5) * scale;
+  const cy = (anchor.y - 0.5) * scale;
+  const rx = cx * cos - cy * sin;
+  const ry = cx * sin + cy * cos;
+  return { x: targetPoint.x - rx, y: targetPoint.y - ry, scale, rotation };
 }
 
 /**

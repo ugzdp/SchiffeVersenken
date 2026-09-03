@@ -67,27 +67,56 @@ case a shape needs revision later.
 - Don't resize/crop/reposition one of the three files relative to the
   others — they must overlay perfectly.
 
-## 4. Base islands (2 needed total)
+## 4. Homebase islands (4 needed total, one art asset each — not per side)
 
-Two of your islands need `type: "base"` — one designed to visually hide a
-base ship on the **left/west** side of a map, one on the **right/east**
-side (mirrored is fine). These need a bay or cove shape where the base ship
-visually tucks in, plus the `base_anchor` mask (§2.4) marking that bay's
-center point.
+Four of your islands need `type: "base"`. Each match, one of these four is
+picked at random for player 1's base and one (independently) for player 2's
+— always at a **fixed size and rotation**, its `base_anchor` point landing
+exactly on that player's fixed base-ship spot, so the base can no longer be
+hit by a shot fired from far away; the shot has to get past the island
+first. Unlike the old 2-island west/east setup, **you only draw one art
+asset per shape** — the game reuses the same art for both players by
+rotating it 180° for player 2 (see the Appendix: art and masks share one
+canvas, so a rotation applied to the collision polygons rotates the
+sprite identically). So author every one of the four **as if it were
+sitting in player 1's bottom-left corner**: the mountain/land mass should
+sit up-and-right of the `base_anchor` dot (that's the direction the open
+map — and the opponent — is in from that corner); the 180° flip used for
+player 2 takes care of pointing it correctly down-and-left from their
+top-right corner instead.
+
+The four are (see `data/islands/island_homebase_*.json` for the current
+hand-authored placeholders — replace their geometry, keep their ids and
+`base_anchor` role):
+
+1. `island_homebase_banana` — a banana/crescent shape, mountain running
+   across about 3/4 of its length, with a plain beach tip on the remaining
+   1/4. `base_anchor` sits in the crescent's concave hollow.
+2. `island_homebase_bay` — a round island with a big mountain in the
+   middle, plus a bay/cove cut into its coastline where the base ship
+   tucks in. `base_anchor` sits in open water inside that cove.
+3. `island_homebase_archipelago` — 7 small islets, each **100% mountain**
+   (no plain beach anywhere on any of them), scattered around a central
+   gap. `base_anchor` sits in that gap, nestled among the islets.
+4. `island_homebase_pear` — a pear shape with a mountain ridge running
+   along its long axis, placed diagonally. Unlike the other three, this
+   one does **not** enclose the base: `base_anchor` sits just outside the
+   pear, on its narrow/down-left side, with the ridge interposed between
+   it and the open map.
 
 ## 5. How many islands
 
-We need roughly **20–30 island shapes total**, including the 2 base
+We need roughly **20–30 island shapes total**, including the 4 homebase
 islands above. They can be delivered in batches — no need to do all of
 them before the pipeline is tested with one.
 
 ## 6. Naming
 
 Use a consistent lowercase id per island, matching across all its files,
-e.g. `island_lagoon_01`, `island_lagoon_01_beach_mask.png`, etc. Base
-islands should be named so it's obvious which side they're for, e.g.
-`island_base_west`, `island_base_east` (matching the existing files already
-in `data/islands/`).
+e.g. `island_lagoon_01`, `island_lagoon_01_beach_mask.png`, etc. The four
+homebase islands should keep the existing ids: `island_homebase_banana`,
+`island_homebase_bay`, `island_homebase_archipelago`,
+`island_homebase_pear` (matching the files already in `data/islands/`).
 
 ---
 

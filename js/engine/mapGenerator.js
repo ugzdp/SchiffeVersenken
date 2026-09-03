@@ -12,8 +12,8 @@
 
 import {
   BASE_SHIP_START,
-  BASE_ZONE_MARGIN,
-  BASE_ZONE_WIDTH,
+  HOMEBASE_ISLAND_SCALE,
+  HOMEBASE_ROTATION,
   ISLAND_PLACEMENT_DEADLINE_MS,
   ISLAND_SCALE_MAX,
   ISLAND_SCALE_MIN,
@@ -23,6 +23,7 @@ import {
   MIN_ISLAND_DISTANCE,
   distance,
   getLandBoundingRadius,
+  solveHomebaseIslandPlacement,
 } from "./rules.js";
 
 // ---------------------------------------------------------------------------
@@ -112,44 +113,28 @@ function isValidPlacement(candidate, candidateEntry, placed) {
 }
 
 /**
- * Place one base island in the left or right vertical band of the map (see
- * CLAUDE.md: base islands are always on opposite sides, player 1 left,
- * player 2 right). Rotation only gets a small jitter, not a forced flip:
- * a base shape's bay orientation is an authoring choice baked into its
- * `landShape`/`baseAnchor` (the library may already provide distinct
- * left- and right-oriented base shapes), and the engine has no documented
- * way to know which local direction a given shape's bay opens toward.
- * @param {() => number} rng
+ * Place one homebase island so its `baseAnchor` (the bay/cove/gap a base
+ * shape marks as the ship's spot, see data/schema.md) lands exactly on that
+ * player's fixed BASE_SHIP_START point - the base island now genuinely
+ * shields the base ship instead of merely decorating the corner near it, so
+ * this is a direct solve rather than a random-attempt search: scale and
+ * rotation are both fixed per CLAUDE.md/user request (constant size and
+ * rotation for the two homebases), and HOMEBASE_ROTATION's per-player value
+ * is exactly what makes an island authored for player 1's bottom-left
+ * corner mirror correctly onto player 2's top-right one (see its doc
+ * comment in rules.js).
  * @param {import("./gameState.js").IslandLibraryEntry} entry
- * @param {"left"|"right"} side
+ * @param {1|2} playerId
  * @returns {{islandId: string, entry: object, x: number, y: number, scale: number, rotation: number}}
  */
-function placeBase(rng, entry, side) {
-  const x =
-    side === "left"
-      ? randomRange(rng, BASE_ZONE_MARGIN, BASE_ZONE_MARGIN + BASE_ZONE_WIDTH)
-      : randomRange(rng, 1 - BASE_ZONE_MARGIN - BASE_ZONE_WIDTH, 1 - BASE_ZONE_MARGIN);
-  const y = randomRange(rng, 0.2, 0.8);
-  const scale = randomRange(rng, ISLAND_SCALE_MIN, ISLAND_SCALE_MAX);
-  const rotation = randomRange(rng, -0.15, 0.15);
-
-  return { islandId: entry.id, entry, x, y, scale, rotation };
-}
-
-/**
- * Try up to MAX_PLACEMENT_ATTEMPTS random spots in the base zone for a base
- * island, same retry pattern as tryPlaceIsland, so a base island can never
- * land close enough to touch a fixed base-ship spawn point or an
- * already-placed island. Falls back to the last attempt if none validate
- * cleanly (the base zone always has ample room, so this is a last resort).
- */
-function tryPlaceBase(rng, entry, side, placed) {
-  let lastCandidate = null;
-  for (let attempt = 0; attempt < MAX_PLACEMENT_ATTEMPTS; attempt++) {
-    lastCandidate = placeBase(rng, entry, side);
-    if (isValidPlacement(lastCandidate, entry, placed)) return lastCandidate;
-  }
-  return lastCandidate;
+function placeHomebase(entry, playerId) {
+  const placement = solveHomebaseIslandPlacement(
+    entry.baseAnchor,
+    BASE_SHIP_START[playerId],
+    HOMEBASE_ISLAND_SCALE,
+    HOMEBASE_ROTATION[playerId]
+  );
+  return { islandId: entry.id, entry, ...placement };
 }
 
 /**
@@ -202,14 +187,18 @@ export function generateMap(islandLibrary, seed, options = {}) {
   // offers more than one base shape, player 1 and player 2 get different
   // ones instead of risking the same shape (or a needless repeat) on both.
   const shuffledBases = shuffle(rng, baseEntries);
-  placed.push(tryPlaceBase(rng, shuffledBases[0], "left", placed));
-  placed.push(tryPlaceBase(rng, shuffledBases[1 % shuffledBases.length], "right", placed));
+  placed.push(placeHomebase(shuffledBases[0], 1));
+  placed.push(placeHomebase(shuffledBases[1 % shuffledBases.length], 2));
 
   const targetCount =
     options.islandCount ?? Math.round(randomRange(rng, MIN_ISLAND_COUNT, MAX_ISLAND_COUNT));
 
+  // Homebase shapes double as ordinary filler islands elsewhere on the map
+  // (at the usual random scale/rotation, unlike the two fixed instances
+  // placed above), so filler picks from the whole library, not just the
+  // non-"base" entries.
   for (let i = 0; i < targetCount; i++) {
-    const entry = pickRandom(rng, normalEntries);
+    const entry = pickRandom(rng, islandLibrary);
     const placement = tryPlaceIsland(rng, entry, placed);
     if (placement) placed.push(placement);
   }

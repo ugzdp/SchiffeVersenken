@@ -31,6 +31,9 @@ import {
   isValidShipPlacementPath,
   getPlacedIslandWorldShapes,
   distance,
+  BASE_SHIP_START,
+  HOMEBASE_ISLAND_SCALE,
+  HOMEBASE_ROTATION,
 } from "./rules.js";
 import { generateMap, createSeededRandom } from "./mapGenerator.js";
 import {
@@ -526,6 +529,25 @@ console.log("generateMap");
     }
   }
   assert(allSeparated, "no two placed islands' bounding circles overlap");
+
+  // Homebase islands (CLAUDE.md: shield the base ship from far-away shots)
+  // must sit at a fixed size/rotation, with their baseAnchor landing exactly
+  // on that player's fixed BASE_SHIP_START point.
+  assert(firstIsland.scale === HOMEBASE_ISLAND_SCALE, "player 1 homebase island uses the fixed homebase scale");
+  assert(firstIsland.rotation === HOMEBASE_ROTATION[1], "player 1 homebase island uses the fixed player-1 rotation");
+  assert(secondIsland.scale === HOMEBASE_ISLAND_SCALE, "player 2 homebase island uses the fixed homebase scale");
+  assert(secondIsland.rotation === HOMEBASE_ROTATION[2], "player 2 homebase island uses the fixed player-2 rotation");
+
+  const [worldAnchor1] = transformIslandPolygon([[mockBaseIsland.baseAnchor.x, mockBaseIsland.baseAnchor.y]], firstIsland);
+  const [worldAnchor2] = transformIslandPolygon([[mockBaseIsland.baseAnchor.x, mockBaseIsland.baseAnchor.y]], secondIsland);
+  assert(
+    approxEqual(worldAnchor1[0], BASE_SHIP_START[1].x) && approxEqual(worldAnchor1[1], BASE_SHIP_START[1].y),
+    "player 1 homebase island's baseAnchor lands exactly on BASE_SHIP_START[1]"
+  );
+  assert(
+    approxEqual(worldAnchor2[0], BASE_SHIP_START[2].x) && approxEqual(worldAnchor2[1], BASE_SHIP_START[2].y),
+    "player 2 homebase island's baseAnchor lands exactly on BASE_SHIP_START[2]"
+  );
 
   console.log(`  (generated ${mapA.islands.length} islands for seed 42)`);
 }

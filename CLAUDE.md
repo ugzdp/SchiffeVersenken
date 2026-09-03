@@ -26,9 +26,17 @@ animation.
 - At game start, a map is assembled by **randomly selecting and placing islands**
   from the library, following placement rules:
   - Minimum distance between islands (no touching/overlapping).
-  - The two **base islands** are special shapes (they contain a bay and/or a
-    mountain to hide the base ship) and are always placed on **opposite sides**
-    of the screen (Player 1 left, Player 2 right).
+  - There are **4 homebase island shapes** (`island_homebase_banana`,
+    `island_homebase_bay`, `island_homebase_archipelago`,
+    `island_homebase_pear`, all `type: "base"` in `data/islands/`). Each
+    match, one is chosen at random for player 1 and one (independently) for
+    player 2, and placed **directly around/in front of that player's base
+    ship** — its `baseAnchor` bay/gap lands exactly on the base ship's fixed
+    spawn point (see "Ships and bases" below) — at a **constant size and
+    rotation** every match, not a random one, so the base is never left
+    exposed to a shot fired from far away; a shot has to get past the
+    island's mountain first. These 4 shapes can also turn up elsewhere on
+    the map like any normal island (at that spot's usual random size).
   - The map must remain playable: open water paths must exist.
 - Once generated, the map is **static** for the whole match. Only light water
   animation plays.
@@ -45,8 +53,10 @@ animation.
 ### Ships and bases
 - Each player starts with exactly **one base ship**, spawned at a **fixed
   position every match** (player 1 near the bottom-left corner, player 2 near
-  the top-right) — independent of the random map, not tied to a base island's
-  bay.
+  the top-right) — independent of the random map's normal island placement.
+  The homebase island (see "Map generation" above) is the one piece of the
+  map that *is* tied to this fixed point every match: it's positioned so its
+  bay/gap always lines up with it.
 - The base ship is drawn with the **same hull shape** as normal ships, just
   noticeably **larger**, so it reads as "special" at a glance.
 - All other ships are spawned during play (see turns). Ships never move after
@@ -121,7 +131,7 @@ Each island shape is one JSON file:
   "landShape": [[0.0, 0.1], [0.2, 0.0], ...],   // polygon, local coords 0–1 (or a list of polygons for a multi-landmass island, e.g. an atoll — see data/schema.md)
   "mountainShapes": [ [[0.3, 0.3], ...] ],      // zero or more polygons inside landShape
   "decorations": [ { "kind": "palm", "x": 0.5, "y": 0.2 } ],
-  "baseAnchor": { "x": 0.15, "y": 0.5 }         // base ships spawn point, only for type "base"
+  "baseAnchor": { "x": 0.15, "y": 0.5 }         // local point aligned to the base ship's fixed spawn, only for type "base"
 }
 ```
 - All coordinates are **relative (0–1) in the island's local space**; the map
