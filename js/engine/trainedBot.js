@@ -43,10 +43,10 @@ import { MAX_SHOT_DISTANCE, MIN_SHOT_DISTANCE, MAX_SWIPE_SPEED, MIN_SWIPE_SPEED,
 import { hitProbability, sampleCandidateEndpoints, buildPlacementPath } from "./bot.js";
 
 /** How long the trained bot "thinks" before acting - see js/botController.js - same as BOT_DIFFICULTY.medium.thinkMs, since it shares medium's accuracy. */
-export const TRAINED_BOT_THINK_MS = 900;
+export const TRAINED_BOT_THINK_MS = 300;
 
-/** Fixed shooting skill - copied from js/engine/bot.js's BOT_DIFFICULTY.medium, the accuracy this genome was actually trained and validated at. */
-const AIM_ERROR_DEG = 9;
+/** Fixed shooting skill - tighter than js/engine/bot.js's "hard" preset (4.5deg/5.5%) on purpose, per explicit request. Kept in sync with tools/train/policy.js's AIM_ERROR_DEG/DISTANCE_ERROR_FACTOR - see the comment there for why they must match. */
+const AIM_ERROR_DEG = 4;
 const DISTANCE_ERROR_FACTOR = 0.12;
 
 const PLACEMENT_CANDIDATE_COUNT = 30;

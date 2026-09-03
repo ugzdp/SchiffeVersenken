@@ -33,12 +33,15 @@ import {
 import { hitProbability, sampleCandidateEndpoints, buildPlacementPath } from "../../js/engine/bot.js";
 
 /**
- * Fixed shooting skill for every trained bot - "the median (medium)
- * preset's accuracy" per the brief this was scoped from. NOT evolved; only
- * the decision weights in Genome are. Values copied from
- * js/engine/bot.js's BOT_DIFFICULTY.medium.
+ * Fixed shooting skill for every trained bot - tighter than js/engine/bot.js's
+ * "hard" preset (4.5deg/5.5%) on purpose, per explicit request. NOT evolved;
+ * only the decision weights in Genome are. MUST match js/engine/trainedBot.js's
+ * copy of these two constants - a genome trained at one accuracy and shipped
+ * at another is a real, previously-hit failure mode (see tools/train/TODO.md
+ * item 3: reusing a genome across a formula/accuracy mismatch once collapsed
+ * a 96%-vs-medium bot to a near coin-flip).
  */
-export const AIM_ERROR_DEG = 9;
+export const AIM_ERROR_DEG = 4;
 export const DISTANCE_ERROR_FACTOR = 0.12;
 
 /**
