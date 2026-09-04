@@ -716,3 +716,45 @@ export function swipeSpeedToDistanceTouch(speed, swipeDistance) {
   const distance = swipeDistance * factor;
   return Math.max(MIN_SHOT_DISTANCE, Math.min(TOUCH_MAX_SHOT_DISTANCE, distance));
 }
+
+/**
+ * Touch-only blind-shot imprecision (CLAUDE.md open design decision, added
+ * on explicit request: a touchscreen swipe should be genuinely harder to
+ * land than a mouse flick, not just differently-mapped). Unlike every other
+ * shot mechanic, this is the one place real per-shot RANDOMNESS is applied
+ * to a HUMAN's own input - a perfectly-aimed swipe can still miss. Desktop
+ * (mouse) shots are completely untouched; js/input.js only calls this when
+ * event.pointerType === "touch".
+ *
+ * There was no prior "current value" for human accuracy to scale (a human
+ * swipe was previously 100% deterministic - 0% error) - these two numbers
+ * are a judgment call for a plausible touchscreen-wobble baseline (5deg /
+ * 10%, in the same ballpark as js/engine/bot.js's own difficulty presets),
+ * with the requested +40% already applied on top (5 * 1.4 = 7,
+ * 0.10 * 1.4 = 0.14). Tune directly if this doesn't feel right in practice.
+ */
+export const TOUCH_AIM_ERROR_DEG = 7;
+export const TOUCH_DISTANCE_ERROR_FACTOR = 0.14;
+
+/**
+ * Perturb a touch swipe's direction and physical travel distance by
+ * TOUCH_AIM_ERROR_DEG/TOUCH_DISTANCE_ERROR_FACTOR before it's resolved into
+ * a shot - mirrors js/engine/bot.js's own aimAt() noise model (uniform
+ * random angle/distance error), applied to a real human's swipe instead of
+ * a simulated one. Call this only for a touch pointer, before passing the
+ * result into actions.js's fireShot().
+ * @param {[number,number]} direction - the swipe's true unit direction vector
+ * @param {number} swipeDistance - the swipe's own true physical travel distance, in relative units
+ * @returns {{direction:[number,number], swipeDistance:number}}
+ */
+export function applyTouchAimError(direction, swipeDistance) {
+  const trueAngle = Math.atan2(direction[1], direction[0]);
+  const angleNoise = ((TOUCH_AIM_ERROR_DEG * Math.PI) / 180) * (Math.random() * 2 - 1);
+  const angle = trueAngle + angleNoise;
+  const noisyDirection = [Math.cos(angle), Math.sin(angle)];
+
+  const distanceNoise = 1 + TOUCH_DISTANCE_ERROR_FACTOR * (Math.random() * 2 - 1);
+  const noisySwipeDistance = Math.max(0, swipeDistance * distanceNoise);
+
+  return { direction: noisyDirection, swipeDistance: noisySwipeDistance };
+}

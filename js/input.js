@@ -27,6 +27,7 @@ import {
   PLACEMENT_CONFIRM_WINDOW_MS,
   SWIPE_TIME_LIMIT_MS,
   TOUCH_CONFIRM_WINDOW_EXTRA_MS,
+  applyTouchAimError,
   getPlacedIslandWorldShapes,
   isValidShipPlacementPath,
   tryExtendDragPath,
@@ -291,14 +292,24 @@ function resolveBlindShot(canvas, state, blindShot, event, onTurnChanged) {
   // never fired between down and up, e.g. a very quick flick some browsers
   // report as a single move event - peakSpeed would otherwise stay 0.
   const avgSpeed = dist / (elapsedMs / 1000);
-  const direction = [dx / dist, dy / dist];
+  let direction = [dx / dist, dy / dist];
+  let swipeDistance = dist;
   const speed = Math.max(blindShot.peakSpeed, avgSpeed);
   const isTouch = event.pointerType === "touch";
+
+  // Touch swipes get real aiming imprecision applied - a mouse's exact
+  // direction/distance is used as-is (see applyTouchAimError's own comment
+  // for why only touch is affected).
+  if (isTouch) {
+    const noisy = applyTouchAimError(direction, swipeDistance);
+    direction = noisy.direction;
+    swipeDistance = noisy.swipeDistance;
+  }
 
   playShotFired();
   const { sunkShip } = fireShot(state, blindShot.originShip, direction, speed, event.timeStamp, {
     isTouch,
-    swipeDistance: dist,
+    swipeDistance,
   });
   // Refresh the menu bar's shot/hit counters right away, so they update as
   // soon as the tracer is shown rather than waiting for the turn to pass
